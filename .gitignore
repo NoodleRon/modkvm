@@ -1,0 +1,8 @@
+# secrets and local state (never commit)
+.pbkey_token
+.pbkey_state.json
+pbsee.json
+portobotty.json
+.portobotty/
+__pycache__/
+*.pyc
