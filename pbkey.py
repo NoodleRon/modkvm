@@ -416,6 +416,7 @@ def tty_raw(fd):
     _TTY["fd"], _TTY["old"] = fd, old
 
 def tty_restore():
+    header_off()
     if _MOUSE_REPORTING["on"]:
         raw_out(MOUSE_OFF_SEQ); _MOUSE_REPORTING["on"] = False
     if _TTY["old"] is not None:
@@ -431,6 +432,30 @@ def raw_out(s):
 
 def say(msg="", end="\n"):
     print(msg, end=end, flush=True)
+
+_HDR = {"on": False, "redraw": False}
+
+
+def header_text(cols):
+    text = "Portabotty: Menu Ctrl+], then press the key in [ ]"
+    return text if len(text) <= cols else text[:cols - 1] + "…"
+
+
+def header_draw(cols, rows):
+    """Pinned top line; everything else scrolls underneath it."""
+    raw_out(f"\x1b7\x1b[1;1H\x1b[2K\x1b[7m{header_text(cols).ljust(cols)[:cols]}\x1b[0m\x1b[2;{rows}r\x1b8")
+
+
+def header_on(cols, rows):
+    _HDR["on"] = True
+    raw_out("\x1b[2J\x1b[H"); header_draw(cols, rows); raw_out("\x1b[2;1H")
+
+
+def header_off():
+    if _HDR["on"]:
+        _HDR["on"] = False
+        raw_out("\x1b[r\x1b[999;1H\n")
+
 
 atexit.register(tty_restore)
 
@@ -655,7 +680,6 @@ class App:
         self.ssh = is_ssh()
         self.pads_auto = MOUSE and "--no-pad" not in sys.argv and (not self.ssh or "--pad" in sys.argv)
         self.pad_state = None
-        self.mouse_note = None                 # last mouse status line printed (prints only on change)
         self.web_url = ""                      # set by main() when the web console is up
         self.see_proc = None                   # PBSEE child started by Key (on by default, remembered)
         self.want_see = bool(st.get("see", True))
@@ -686,15 +710,15 @@ class App:
         if not bl:
             say("No bonds.")
             return bl
-        say(f"\n  {'#':<3}{'Device':<28}{'Address':<19}Status")
+        say(f"\n  {'[1-9]':<6}{'Device':<26}{'Address':<19}Status")
         for i, b in enumerate(bl, 1):
             mark = "*" if b["addr"] == self.active else " "
-            say(f"{mark} {i:<3}{b['name'][:26]:<28}{b['addr']:<19}{self.status(b)}")
-        say(f"\n  * = active target | solo: {'ON' if self.solo else 'OFF'} | "
-            f"mouse: {('map' if self.term_map else 'relative') if self.mouse_term else 'off'} | "
-            f"trackpad: {'ON' if self.pads else 'off'}"
-            f"{'' if MOUSE else ' | keyboard-only mode'}")
-        say(f"  see: {SEE_DOT[self.see_now()]}" + (f" | web: {self.web_url}" if self.web_url else "") + "\n")
+            say(f"{mark} {i:<5}{b['name'][:24]:<26}{b['addr']:<19}{self.status(b)}")
+        ptr = (f" | mouse [m] {(('map' if self.term_map else 'relative') + ' [a]') if self.mouse_term else 'off'}"
+               f" | trackpad [t] {'ON' if self.pads else 'off'} | home [h] | size [+/-]") if MOUSE else " | keyboard-only"
+        say(f"\n  solo [s] {'ON' if self.solo else 'OFF'}{ptr}")
+        say(f"  see [c] {SEE_DOT[self.see_now()]}" + (f" | web [w] {self.web_url}" if self.web_url else ""))
+        say("  pair [p] | drop [d] | forget [f] | quit [q]\n")
         return bl
 
     def banner(self):
@@ -884,24 +908,21 @@ class App:
 
     def term_fraction(self, x, y):
         cols, rows, xp, yp = self.term_size()
+        top = 1 if _HDR["on"] else 0                      # the pinned header row is not part of the map
         if self.mscale == (1, 1) and xp > 0 and yp > 0:
-            return min(max(x / xp, 0.0), 1.0), min(max(y / yp, 0.0), 1.0)
-        return (min(max((x - 1) / max(cols - 1, 1), 0.0), 1.0), min(max((y - 1) / max(rows - 1, 1), 0.0), 1.0))
-
-    def mnote(self, msg):
-        if msg != getattr(self, "mouse_note", None):
-            self.mouse_note = msg; say(msg)
+            rh = yp / max(rows, 1) * top
+            return min(max(x / xp, 0.0), 1.0), min(max((y - rh) / max(yp - rh, 1), 0.0), 1.0)
+        return (min(max((x - 1) / max(cols - 1, 1), 0.0), 1.0),
+                min(max((y - 1 - top) / max(rows - 1 - top, 1), 0.0), 1.0))
 
     def send_mouse(self, dx, dy, wheel, buttons):
         a = self.active
         if not a: return False
         while True:
             sx, sy, sw = (max(-127, min(127, v)) for v in (dx, dy, wheel))
-            if not self.hid.mouse(a, buttons, sx, sy, sw):
-                self.mnote("mouse: not sent (device not connected)"); return False
+            if not self.hid.mouse(a, buttons, sx, sy, sw): return False
             dx -= sx; dy -= sy; wheel -= sw
-            if not (dx or dy or wheel):
-                self.mnote("mouse: sending"); return True
+            if not (dx or dy or wheel): return True
 
     # ---------- misc ----------
     def ask_target(self, verb, fd):
@@ -1139,7 +1160,6 @@ class App:
 
     def menu(self, fd):
         self.show()
-        say("1-9 switch  p pair  s solo  m mouse  t pad  a map  h home  +/- size  c see  w web  d drop  f forget  q quit")
         k = self.getkey(fd)
         if k is None: return
         if k.isdigit() and k != "0":
@@ -1202,7 +1222,6 @@ class App:
                 break
             if kind == "mouse":
                 _, cb, x, y, pressed = ev
-                if self.mouse_note is None: self.mnote("mouse: terminal events arriving")
                 if cb & 64:                                      # wheel: 64 = up, 65 = down
                     wheel += 1 if (cb & 3) == 0 else -1
                     continue
@@ -1243,7 +1262,8 @@ class App:
     def console(self):
         fd = sys.stdin.fileno()
         time.sleep(0.5)
-        say("\nPBKEY  Ctrl+] menu")
+        cols, rows = self.term_size()[:2]
+        header_on(cols, rows)
         bl = self.show()
         if bl and self.active not in [b["addr"] for b in bl]:
             self.set_active(bl[0]["addr"])
@@ -1265,6 +1285,8 @@ class App:
                 data = self.read(fd)
                 if data is None: break
                 if data: self.handle(fd, data)
+                if _HDR["redraw"]:
+                    _HDR["redraw"] = False; header_draw(*self.term_size()[:2])
                 if self.pads_auto and time.time() - self.last_scan > PAD_RESCAN:
                     self.last_scan = time.time(); self.scan_pads()
                 if time.time() - self.last_see_check > 2:
@@ -1428,6 +1450,7 @@ def main():
     loop = GLib.MainLoop()
     for sig in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
         signal.signal(sig, lambda *a: app.stop.set())
+    signal.signal(signal.SIGWINCH, lambda *a: _HDR.__setitem__("redraw", True))
     GLib.timeout_add(200, lambda: (loop.quit(), False)[1] if app.stop.is_set() else True)
     target = app.console if sys.stdin.isatty() else app.headless
     threading.Thread(target=target, daemon=True).start()

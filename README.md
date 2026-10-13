@@ -42,7 +42,7 @@ pb
 Update: `cd ~/portabotty && git pull`.
 
 ## PBKEY
-Typing goes straight to the active device. A line prints when something changes (device, `● live` / `◐ idle` / `○ stopped` for the camera). The web link is printed at start and on `w`. `Ctrl+]` then:
+Typing goes straight to the active device. The top line stays pinned: `Portabotty: Menu Ctrl+], then press the key in [ ]`. The status lines show each key next to its indicator (`solo [s] ON`, `mouse [m] map [a]`, `see [c] ● live`, `web [w] <link>`). A line prints when something changes (device, camera state). `Ctrl+]` then:
 
 | key | does |
 |---|---|
