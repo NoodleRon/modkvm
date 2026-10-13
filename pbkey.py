@@ -1185,14 +1185,14 @@ def make_api(app, token, host, port):
 def install_launcher():
     me = os.path.abspath(__file__)
     script = ('#!/bin/sh\n# PBKEY launcher (created by pbkey.py --install). Works in any shell, local or SSH.\n'
-              f'sudo pkill -f "[p]bkey\\.py|/[k]eybridge\\.py|/[b]ridge\\.py" 2>/dev/null; sleep 1\nexec sudo python3 "{me}" "$@"\n')
+              f'sudo pkill -f "[p]bkey\\.py" 2>/dev/null; sleep 1\nexec sudo python3 "{me}" "$@"\n')
     try:
         for name in ("pbk", "pbkb"):
             with open(f"/usr/local/bin/{name}", "w") as f: f.write(script)
             os.chmod(f"/usr/local/bin/{name}", 0o755)
     except PermissionError:
         sys.exit(f"Run:  sudo python3 {me} --install")
-    print("Installed pbk and pbkb (run from any shell, console or SSH). The old kb alias in ~/.bashrc can go.")
+    print("Installed pbk and pbkb (run from any shell, console or SSH).")
 
 
 def main():

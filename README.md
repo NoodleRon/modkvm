@@ -1,5 +1,7 @@
 # Portobotty
 
+Version 0.0.00001
+
 Your Linux server as a Bluetooth keyboard + mouse for phones, tablets and computers, plus a webcam view of their screens. Use it from a terminal, a web page, or an agent (MCP).
 
 | part | commands | job |
@@ -41,8 +43,6 @@ sudo python3 portobotty.py --install         # creates pb, pbk, pbkb, pbs, pbc (
 pb
 ```
 Update later: `cd ~/portobotty && git pull`.
-
-**Coming from the earlier names:** delete `~/bridge.py`, `~/camview.py`, and the `kb` alias in `~/.bashrc` (that alias is why `kb` was missing on the laptop console). Rename `camview.json` to `pbsee.json` to keep camera settings. Active phone and solo reset once. The server now advertises as "Portobotty <hostname>"; existing bonds keep working. Old unit/process names are killed by `pbk`.
 
 ## What `pb` does
 - Inside tmux: splits panes (hub, pbk, pbs). Plain SSH terminal: starts tmux session `portobotty` (reattach with `pb` or `tmux attach -t portobotty`). Desktop session: opens two terminal windows (gnome-terminal, kitty, wezterm, alacritty, konsole, xfce4-terminal, xterm). Neither available: background processes with logs in `.portobotty/` (sudo can't prompt there, so start `pbk` yourself).

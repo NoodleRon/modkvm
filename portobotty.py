@@ -455,6 +455,7 @@ def main():
     ap.add_argument("--no-launch", action="store_true", help="hub and web console only")
     ap.add_argument("--hub", action="store_true", help=argparse.SUPPRESS)
     ap.add_argument("--install", action="store_true")
+    ap.add_argument("--version", action="version", version="Portobotty 0.0.00001")
     a = ap.parse_args()
     if a.install: return install(a)
     cmd_start(a)
