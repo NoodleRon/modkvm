@@ -657,7 +657,8 @@ class App:
         self.pad_state = None
         self.mouse_note = None                 # last mouse status line printed (prints only on change)
         self.web_url = ""                      # set by main() when the web console is up
-        self.see_proc = None                   # PBSEE child started with the c hotkey
+        self.see_proc = None                   # PBSEE child started by Key (on by default, remembered)
+        self.want_see = bool(st.get("see", True))
         self.see_last = None
         self.last_see_check = 0.0
         self.last_scan = 0.0
@@ -925,24 +926,46 @@ class App:
             say(f"{SEE_DOT[st]} see")
         self.see_last = st
 
-    def toggle_see(self):
-        p = self.see_proc
-        if p and p.poll() is None:
-            p.terminate(); self.see_proc = None; say("See off"); return
-        if web and web.port_open(web.SB_URL):
-            say("See is running in another terminal"); return
+    def see_running(self):
+        return bool(self.see_proc and self.see_proc.poll() is None)
+
+    def start_see(self, quiet=False):
+        if self.see_running() or (web and web.port_open(web.SB_URL)):
+            return True                                                # already up (here or in another terminal)
         script = os.path.join(os.path.dirname(os.path.abspath(__file__)), "pbsee.py")
         if not os.path.exists(script):
-            say("pbsee.py not found"); return
+            quiet or say("pbsee.py not found"); return False
         cmd = [sys.executable, script, "serve"]
         if os.geteuid() == 0 and os.environ.get("SUDO_USER"):
             cmd = ["sudo", "-u", os.environ["SUDO_USER"]] + cmd       # the camera needs the video group, not root
         self.see_proc = subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
                                          stderr=subprocess.DEVNULL, start_new_session=True)
-        say("See starting")
+        quiet or say("See starting")
+        return True
+
+    def stop_see(self, quiet=False):
+        if self.see_running():
+            self.see_proc.terminate()
+            try: self.see_proc.wait(3)
+            except Exception: pass
+        self.see_proc = None
+        quiet or say("See off")
+
+    def set_see(self, on, quiet=True):
+        """Remembered across runs (default on). Returns the new wanted state."""
+        self.want_see = bool(on); save_state(see=self.want_see)
+        if self.want_see: self.start_see(quiet)
+        else:
+            if web and web.port_open(web.SB_URL) and not self.see_running():
+                quiet or say("See is running in another terminal")
+            self.stop_see(quiet)
+        return self.want_see
+
+    def toggle_see(self):
+        self.set_see(not (self.want_see and (self.see_running() or (web and web.port_open(web.SB_URL)))), quiet=False)
 
     def shutdown(self):
-        if self.see_proc and self.see_proc.poll() is None: self.see_proc.terminate()
+        self.stop_see(quiet=True)
         self.set_term_mouse(False, quiet=True)
         self.stop_pads()
         for addr in list(self.hid.conns):
@@ -1229,6 +1252,7 @@ class App:
             if self.active: self.auto_reconnect()
             termios.tcflush(fd, termios.TCIFLUSH)
             self.banner()
+            if self.want_see: self.start_see(quiet=True)
             if MOUSE:
                 if "--no-term-mouse" not in sys.argv:
                     has, typed = self.term_has_mouse(fd)
@@ -1255,6 +1279,7 @@ class App:
 
     def headless(self):
         time.sleep(0.5)
+        if self.want_see: self.start_see(quiet=True)
         if self.active: self.auto_reconnect()
 
 # ---------------------------------------------------------------- local HTTP API (for agents / MCP)
@@ -1387,6 +1412,8 @@ def main():
                 wtok = web.web_token(wl, argval("--web-token", ""))
                 web_srv = web.start_gateway(wl, wp, wtok)
                 app.web_url = web.web_url(wl, wp, wtok)
+                web.SEE["state"] = lambda: app.want_see
+                web.SEE["set"] = app.set_see
                 fw = firewall_hint(wp) if wl == "0.0.0.0" else ""
                 if fw: app.web_url += f"   (ufw blocks LAN: {fw})"
                 cfg = web.load_cfg()
@@ -1409,6 +1436,7 @@ def main():
     finally:
         tty_restore()
         app.stop_pads()
+        app.stop_see(quiet=True)
         if api_srv: api_srv.shutdown()
         if web_srv: web_srv.shutdown()
         for a in list(app.hid.conns): app.hid.drop(a)

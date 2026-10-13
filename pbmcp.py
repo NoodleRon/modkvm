@@ -58,8 +58,19 @@ def cv_json(path):
     return json.loads(raw)
 
 
+def linked_cam():
+    """Camera linked (web console) to the active phone, else ''."""
+    try:
+        cfg = json.load(open(os.environ.get("PORTABOTTY_CONFIG", os.path.join(os.path.dirname(os.path.abspath(__file__)), "portabotty.json"))))
+        return cfg.get("links", {}).get(kb("/status").get("active"), "")
+    except Exception:
+        return ""
+
+
 def pick_cam(name):
     if name or CV_CAM: return name or CV_CAM
+    c = linked_cam()
+    if c: return c
     cams = cv_json("/cams")
     cams = cams.get("cams", cams) if isinstance(cams, dict) else cams
     names = [c if isinstance(c, str) else c.get("name") for c in cams]
@@ -84,7 +95,7 @@ TOOLS = [
     ("phone_drag", "Press at (x1,y1), drag to (x2,y2), release. Fractions of the screen. Use for swipes.",
      {"x1": FR, "y1": FR, "x2": FR, "y2": FR, "duration": {"type": "number"}}, ["x1", "y1", "x2", "y2"]),
     ("phone_home_pointer", "Re-home the pointer to the top-left corner (fixes drift after many moves).", {}, []),
-    ("phone_look", "Take a photo of the phone screen from the webcam (pbsee). Optionally wait `settle` seconds first so the "
+    ("phone_look", "Take a photo of the phone screen from the webcam (pbsee; uses the camera linked to the active phone in the web console). Optionally wait `settle` seconds first so the "
                    "screen has updated. Returns the image plus the change score.",
      {"settle": {"type": "number"}, "camera": {"type": "string"}, "query": {"type": "string",
       "description": "extra pbsee options, e.g. 'w=900&contrast'"}}, []),

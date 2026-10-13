@@ -53,7 +53,7 @@ Typing goes straight to the active device. A line prints when something changes 
 | `a` | mouse: **map** (window = device screen) / **relative** |
 | `h` | re-home pointer to top-left |
 | `+` `-` | map size ±10 % |
-| `c` | start / stop the camera server (PBSEE) |
+| `c` | camera server (PBSEE) on / off; **on by default**, the last choice is remembered |
 | `w` | print the web link |
 | `d` / `f` / `q` | drop / forget (y) / quit |
 
@@ -66,19 +66,18 @@ Typing goes straight to the active device. A line prints when something changes 
 ## PBSEE
 `pbs` runs the camera server and prints `● live` / `◐ idle` / `○ stopped` on change (cameras run only while watched, stop after 10 s). `pbs screen` is a full-screen view with a latest picture where the terminal supports inline images (~1/s, 480 px). `pbs list | snap NAME -o shot.jpg | doctor | probe | install-service`.
 
-**Calibrate first** (web console ⚙, `/view`): Calibrate screen → click the 4 corners (TL, TR, BR, BL) → Save view. Web taps map onto this view.
+**Calibrate first** (web console, Link sheet, view row): Calibrate → tap the 4 screen corners (TL, TR, BR, BL) on the live image. Web taps map onto this view.
 
 Cameras are data: `pbsee.json`, one entry per camera (`match`: `usb:VID:PID` / `name:` / `serial:` / `path:`; `size`, `fps`, `controls`, `opts`); `pbs probe` writes it. Localhost-only by default; beyond that a token is required.
 
 ## Web console
 Served by PBKEY on port 8800, on the local network by default; the link carries a token (generated once, kept in `portabotty.json`). `--web-listen 127.0.0.1` keeps it local. `--no-web` turns it off. Start-up shows `web: <link>`, or why it's off. Not reachable from another computer: `sudo ufw allow 8800/tcp` (Key prints this when ufw blocks it) and use the printed link including `?t=` (without the token: 401).
 
-Live image, device chips (tap to switch), key / see dots (green up, amber idle, red stopped). Works with either part down.
-- **◎ direct:** tap = click there, drag = swipe, long-press / two-finger tap = right click, wheel / two-finger drag = scroll.
-- **▭ pad:** image area is a relative trackpad.
+Live image, device chips (tap to switch; a chip shows its linked view), key / see pills (green up, amber idle, red stopped). Works with either part down.
+- **◎ direct:** tap = click there, drag = swipe, long-press / two-finger tap = right click, wheel / two-finger drag = scroll. **▭ pad:** the image is a relative trackpad.
 - **⌨** opens the device keyboard; on desktop just type. Keys, Ctrl/Alt/Cmd combos, F-keys, arrows forwarded.
-- **⋯** tray: esc tab ⌫ ⏎ arrows, sticky ⌃ ⌥ ⌘ ⇧, ⌂ (Cmd+H), Cmd+Space, Cmd+Tab.
-- **⚙** calibration page.
+- **⋯** dock, collapsible, three tabs: **Tray** (esc tab ⌫ ⏎ arrows, sticky ⌃ ⌥ ⌘ ⇧, ⌂ = Cmd+H, Cmd+Space, Cmd+Tab; default on phones), **Keys** (full on-screen board, sticky modifiers, keys flash as they're sent), **Pad** (trackpad surface with a touch dot, tap = click, two fingers = scroll, Left / Middle / Right).
+- **Link** sheet: devices on the left, views (cameras) on the right. Drag a dot to the other side (or tap a device, then a view) to link them; × on the line unlinks. Choosing a device shows its linked view, and MCP `phone_look` uses it. Row chevrons expand the settings: device (solo, server trackpad, reconnect / disconnect, home pointer), view (rotate, gray, contrast, sharpness, width, calibrate / clear). The switch above Views turns the camera server on or off. Links are stored in `portabotty.json`.
 
 ## Remote access (PBRELAY)
 Reach the console from anywhere without opening a port on your network. Run `relay.py` on any small public host (stdlib only; put TLS in front, e.g. Caddy or an AWS load balancer), and your server dials out to it.
