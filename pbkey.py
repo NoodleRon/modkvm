@@ -657,6 +657,7 @@ class App:
         self.pad_state = None
         self.mouse_note = None                 # last mouse status line printed (prints only on change)
         self.web_url = ""                      # set by main() when the web console is up
+        self.web_tunnel = ""                   # over SSH: tunnel command + localhost link
         self.see_proc = None                   # PBSEE child started with the c hotkey
         self.see_last = None
         self.last_see_check = 0.0
@@ -693,7 +694,9 @@ class App:
             f"mouse: {('map' if self.term_map else 'relative') if self.mouse_term else 'off'} | "
             f"trackpad: {'ON' if self.pads else 'off'}"
             f"{'' if MOUSE else ' | keyboard-only mode'}")
-        say(f"  see: {SEE_DOT[self.see_now()]}" + (f" | web: {self.web_url}" if self.web_url else "") + "\n")
+        say(f"  see: {SEE_DOT[self.see_now()]}" + (f" | web: {self.web_url}" if self.web_url else ""))
+        if self.web_tunnel: say(f"  {self.web_tunnel}")
+        say()
         return bl
 
     def banner(self):
@@ -1140,7 +1143,7 @@ class App:
             save_state(map_gain=round(self.map_gain, 3)); self.vpos = None
             say(f"Map x{self.map_gain:.2f}")
         elif k == "c": self.toggle_see()
-        elif k == "w": say(self.web_url or "web off")
+        elif k == "w": say(self.web_url or "web off"); self.web_tunnel and say(self.web_tunnel)
         elif k == "d":
             b = self.ask_target("Drop", fd)
             if b: self.drop(b)
@@ -1387,6 +1390,10 @@ def main():
                 wtok = web.web_token(wl, argval("--web-token", ""))
                 web_srv = web.start_gateway(wl, wp, wtok)
                 app.web_url = web.web_url(wl, wp, wtok)
+                if app.ssh:
+                    u = os.environ.get("SUDO_USER") or os.environ.get("USER") or "user"
+                    app.web_tunnel = (f"tunnel: ssh -L {wp}:localhost:{wp} {u}@{web.lan_ip()}  ->  "
+                                      f"http://localhost:{wp}/" + (f"?t={wtok}" if wtok else ""))
                 fw = firewall_hint(wp) if wl == "0.0.0.0" else ""
                 if fw: app.web_url += f"   (ufw blocks LAN: {fw})"
                 cfg = web.load_cfg()
