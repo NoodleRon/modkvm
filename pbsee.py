@@ -25,8 +25,9 @@ SYSFS = os.environ.get("PBSEE_SYSFS", "/sys")
 DEVFS = os.environ.get("PBSEE_DEVFS", "/dev")
 CONFIG = os.environ.get("PBSEE_CONFIG", os.path.join(HERE, "pbsee.json"))
 IDLE_STOP = float(os.environ.get("PBSEE_IDLE", "10"))     # seconds without viewers before a camera stops
+FOCUS_WAIT = float(os.environ.get("PBSEE_FOCUS_WAIT", "1.2"))   # seconds autofocus gets to settle before it is frozen
 CHANGE_THRESHOLD = 2.0                                        # mean abs pixel diff (0-255) that counts as "screen changed"
-OPT_KEYS = ("rot", "tilt", "crop", "warp", "contrast", "sharp", "gamma", "gray", "w", "q")
+OPT_KEYS = ("rot", "tilt", "crop", "warp", "contrast", "sharp", "gamma", "gray", "w", "q", "avg")
 
 
 # ---------------------------------------------------------------- small helpers
@@ -184,33 +185,55 @@ def parse_opts(q, base):
         o = {}
     def one(k): return q[k][-1] if k in q and q[k] else None
     for k, cast in (("rot", int), ("tilt", float), ("w", int), ("q", int), ("contrast", float), ("sharp", float),
-                    ("gamma", float), ("gray", int), ("fps", float)):
+                    ("gamma", float), ("gray", int), ("fps", float), ("avg", int)):
         v = one(k)
         if v not in (None, ""):
             try: o[k] = cast(v)
             except ValueError: pass
     if "tilt" in o: o["tilt"] = max(-45.0, min(45.0, o["tilt"]))
+    if "avg" in o: o["avg"] = max(1, min(16, o["avg"]))
     for k, n in (("crop", 4), ("warp", 8)):
         v = _nums(one(k), n) if one(k) else None
         if v: o[k] = v
     return o
 
 def needs_processing(o):
-    return bool(o.get("rot") or o.get("tilt") or o.get("crop") or o.get("warp") or o.get("contrast") or o.get("sharp")
+    return bool(o.get("avg", 1) > 1 or o.get("rot") or o.get("tilt") or o.get("crop") or o.get("warp") or o.get("contrast") or o.get("sharp")
                 or o.get("gray") or o.get("w") or (o.get("gamma") not in (None, 0, 1, 1.0)))
 
-def process(jpeg, o):
+class Denoiser:
+    """Temporal denoise for a still scene: running mean of the last n frames, restarted when the picture moves.
+    Sensor noise falls with sqrt(n); text edges stay put because a changed frame resets the mean."""
+    MOVE = 6.0                                                  # mean abs diff (0-255) on a 32px thumbnail that counts as motion
+
+    def __init__(self, n):
+        self.n, self.acc, self.k, self.thumb = max(1, int(n)), None, 0, None
+
+    def add(self, jpeg):
+        from PIL import Image, ImageChops, ImageStat
+        im = Image.open(io.BytesIO(jpeg)).convert("RGB")
+        t = im.convert("L").resize((32, 32))
+        if self.acc is None or self.acc.size != im.size or ImageStat.Stat(ImageChops.difference(t, self.thumb)).mean[0] > self.MOVE:
+            self.acc, self.k = im, 1
+        else:
+            self.k = min(self.k + 1, self.n)
+            self.acc = Image.blend(self.acc, im, 1.0 / self.k)
+        self.thumb = t
+        return self.acc
+
+
+def process(jpeg, o, im=None):
     """Pass-through unless the view needs work. Order: tilt (crop views) -> warp/crop -> tilt (warped views) -> rotate -> contrast/gamma/sharpen -> resize.
     tilt = degrees to straighten a crooked camera (counter-clockwise positive)."""
-    if not needs_processing(o):
+    if im is None and not needs_processing(o):
         return jpeg
     from PIL import Image, ImageOps, ImageEnhance
     T, R, TR = getattr(Image, "Transform", Image), getattr(Image, "Resampling", Image), getattr(Image, "Transpose", Image)
-    im = Image.open(io.BytesIO(jpeg))
+    if im is None: im = Image.open(io.BytesIO(jpeg))
     W, H = im.size
     maxw = int(o.get("w") or 0)
     rot = int(o.get("rot") or 0) % 360
-    if maxw and not o.get("warp"):                       # let the JPEG decoder shrink for us (cheap on slow CPUs)
+    if maxw and not o.get("warp") and hasattr(im, "draft"):   # let the JPEG decoder shrink for us (cheap on slow CPUs)
         side = int(o.get("rot") or 0) % 180 != 0         # after a 90/270 turn the output width comes from the source height
         c = o.get("crop")
         need = int(maxw / max((c[3] if side else c[2]) if c else 1.0, 0.05))
@@ -220,7 +243,7 @@ def process(jpeg, o):
     W, H = im.size
     tilt = float(o.get("tilt") or 0)
     if tilt and not o.get("warp"):                       # straighten first so a plain crop can use every pixel
-        im = im.rotate(tilt, resample=R.BILINEAR)
+        im = im.rotate(tilt, resample=R.BICUBIC)
     if o.get("warp"):
         wp = o["warp"]; pts = [(wp[i] * W, wp[i + 1] * H) for i in (0, 2, 4, 6)]
         d = lambda a, b: math.hypot(a[0] - b[0], a[1] - b[1])
@@ -228,8 +251,8 @@ def process(jpeg, o):
         fw = oh if rot % 180 else ow                     # `w` limits the final (rotated) width
         if maxw and fw > maxw: ow, oh = ow * maxw / fw, oh * maxw / fw
         ow, oh = max(8, int(ow)), max(8, int(oh))
-        im = im.transform((ow, oh), T.PERSPECTIVE, persp_coeffs(pts, ow, oh), R.BILINEAR)
-        if tilt: im = im.rotate(tilt, resample=R.BILINEAR)   # fixes a hastily marked quadrilateral
+        im = im.transform((ow, oh), T.PERSPECTIVE, persp_coeffs(pts, ow, oh), R.BICUBIC)
+        if tilt: im = im.rotate(tilt, resample=R.BICUBIC)   # fixes a hastily marked quadrilateral
     elif o.get("crop"):
         x, y, w, h = o["crop"]
         im = im.crop((int(x * W), int(y * H), max(int((x + w) * W), int(x * W) + 1), max(int((y + h) * H), int(y * H) + 1)))
@@ -243,10 +266,10 @@ def process(jpeg, o):
     if o.get("sharp"):
         im = ImageEnhance.Sharpness(im).enhance(1 + float(o["sharp"]))
     if maxw and im.width > maxw:
-        im = im.resize((maxw, max(1, im.height * maxw // im.width)), R.BILINEAR)
+        im = im.resize((maxw, max(1, im.height * maxw // im.width)), R.LANCZOS)
     if o.get("gray"):
         im = im.convert("L")
-    out = io.BytesIO(); im.save(out, "JPEG", quality=int(o.get("q") or 80))
+    out = io.BytesIO(); im.save(out, "JPEG", quality=int(o.get("q") or 90), subsampling=0)
     return out.getvalue()
 
 
@@ -270,8 +293,8 @@ class Cam:
     # -- config views
     def defaults(self): return dict(self.entry.get("opts") or {})
     def want_size(self):
-        m = re.match(r"(\d+)x(\d+)", str(self.entry.get("size", "1280x720")))
-        return (int(m.group(1)), int(m.group(2))) if m else (1280, 720)
+        m = re.match(r"(\d+)x(\d+)", str(self.entry.get("size", "1920x1080")))
+        return (int(m.group(1)), int(m.group(2))) if m else (1920, 1080)
 
     # -- lifecycle
     def acquire(self):
@@ -294,6 +317,34 @@ class Cam:
         if p:
             try: p.terminate()
             except Exception: pass
+
+    def focus(self, lock):
+        """Lock: let autofocus settle once, then freeze it where it landed (stops focus hunting that smears text).
+        Unlock: back to continuous autofocus."""
+        if self.src.startswith("test:") or not shutil.which("v4l2-ctl"): return {"ok": False, "error": "camera has no focus control"}
+        have = run(["v4l2-ctl", "-d", self.src, "--list-ctrls"])
+        auto = next((k for k in ("focus_automatic_continuous", "focus_auto") if k in have), None)
+        if not auto or "focus_absolute" not in have: return {"ok": False, "error": "camera has no focus control"}
+        ctl = dict(self.entry.get("controls") or {})
+        for k in ("focus_automatic_continuous", "focus_auto", "focus_absolute"): ctl.pop(k, None)
+        self.entry["controls"] = ctl
+        self.acquire()
+        try:
+            time.sleep(FOCUS_WAIT)
+            run(["v4l2-ctl", "-d", self.src, "--set-ctrl", f"{auto}=1"])
+            val = None
+            if lock:
+                time.sleep(FOCUS_WAIT * 2)
+                m = re.search(r"focus_absolute\D*(-?\d+)", run(["v4l2-ctl", "-d", self.src, "--get-ctrl", "focus_absolute"]))
+                if not m: return {"ok": False, "error": "could not read focus"}
+                val = int(m.group(1))
+                run(["v4l2-ctl", "-d", self.src, "--set-ctrl", f"{auto}=0"])
+                run(["v4l2-ctl", "-d", self.src, "--set-ctrl", f"focus_absolute={val}"])
+                ctl[auto], ctl["focus_absolute"] = 0, val
+        finally:
+            self.release()
+        State.reg.save_controls(self)
+        return {"ok": True, "locked": bool(lock), "value": val}
 
     def wait_frame(self, after, timeout=5.0):
         with self.cond:
@@ -451,21 +502,29 @@ class Registry:
         self.refresh()
         return [{"name": c.name, "label": c.info.get("label"), "src": c.src, "present": c.present,
                  "usb": f"{c.info.get('vid')}:{c.info.get('pid')}" if c.info.get("vid") else "",
-                 "opts": c.defaults()} for c in self.cams.values()]
+                 "opts": c.defaults(), "focus_locked": "focus_absolute" in (c.entry.get("controls") or {})}
+                for c in self.cams.values()]
 
     def status(self):
         self.refresh()
         return {"cams": [c.status() for c in self.cams.values()]}
 
+    def save_controls(self, cam):
+        with self.lock:
+            if cam.entry not in self.cfg["cameras"]: self._adopt(cam)
+            save_config(self.cfg)
+
+    def _adopt(self, cam):
+        info = cam.info
+        cam.entry.update({"name": cam.name,
+                          "match": f"usb:{info['vid']}:{info['pid']}" if info.get("vid") and
+                          sum(1 for c in self.cams.values() if c.info.get("vid") == info["vid"] and c.info.get("pid") == info["pid"]) == 1
+                          else f"path:{info['stable']}"})
+        self.cfg["cameras"].append(cam.entry)
+
     def save_opts(self, cam, opts):
         with self.lock:
-            if cam.entry not in self.cfg["cameras"]:
-                info = cam.info
-                cam.entry.update({"name": cam.name,
-                                  "match": f"usb:{info['vid']}:{info['pid']}" if info.get("vid") and
-                                  sum(1 for c in self.cams.values() if c.info.get("vid") == info["vid"] and c.info.get("pid") == info["pid"]) == 1
-                                  else f"path:{info['stable']}"})
-                self.cfg["cameras"].append(cam.entry)
+            if cam.entry not in self.cfg["cameras"]: self._adopt(cam)
             cam.entry["opts"] = {k: v for k, v in opts.items() if k in OPT_KEYS and v not in (None, "", 0, [])}
             save_config(self.cfg)
 
@@ -539,14 +598,15 @@ class Handler(BaseHTTPRequestHandler):
             cam = reg.get(parts[1][:-4] if parts[1].endswith(".jpg") else parts[1])
             if not cam: return self._send(404, b"no such camera", "text/plain")
             o = parse_opts(q, cam.defaults())
-            return self._snap(cam, o) if parts[0] == "snap" else self._stream(cam, o)
+            if parts[0] == "snap": return self._snap(cam, o, explicit="avg" in q or ("raw" in q and q["raw"][-1] not in ("0", "")))
+            return self._stream(cam, o)
         self._send(404, b"not found", "text/plain")
 
     def do_POST(self):
         u = urllib.parse.urlparse(self.path); q = urllib.parse.parse_qs(u.query)
         parts = [p for p in u.path.split("/") if p]
         if not self._auth(q): return self._send(401, b"token required", "text/plain")
-        if len(parts) != 2 or parts[0] not in ("calibrate", "save"):
+        if len(parts) != 2 or parts[0] not in ("calibrate", "save", "focus"):
             return self._send(404, b"not found", "text/plain")
         cam = State.reg.get(parts[1])
         if not cam: return self._send(404, b"no such camera", "text/plain")
@@ -554,26 +614,37 @@ class Handler(BaseHTTPRequestHandler):
             body = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0)) or 0) or b"{}")
         except Exception:
             return self._send(400, b"bad json", "text/plain")
+        if parts[0] == "focus":
+            return self._json(cam.focus(bool(body.get("lock", True))))
         opts = cam.defaults()
         if parts[0] == "calibrate":
             if body.get("clear"): opts.pop("warp", None); opts.pop("crop", None)
             elif _nums(body.get("warp"), 8): opts["warp"] = _nums(body["warp"], 8); opts.pop("crop", None)
             else: return self._send(400, b"need warp[8] or clear", "text/plain")
         else:
-            for k, cast in (("rot", int), ("tilt", float), ("w", int), ("q", int), ("contrast", float), ("sharp", float), ("gamma", float), ("gray", int)):
+            for k, cast in (("rot", int), ("tilt", float), ("w", int), ("q", int), ("contrast", float), ("sharp", float), ("gamma", float), ("gray", int), ("avg", int)):
                 if k in body:
                     try: opts[k] = cast(body[k])
                     except (TypeError, ValueError): pass
+            if "avg" in opts: opts["avg"] = max(1, min(16, opts["avg"]))
             if "tilt" in opts: opts["tilt"] = round(max(-45.0, min(45.0, float(opts["tilt"]))), 2)
             if _nums(body.get("crop"), 4): opts["crop"] = _nums(body["crop"], 4)
         State.reg.save_opts(cam, opts)
         self._json({"ok": True, "opts": cam.defaults()})
 
-    def _snap(self, cam, o):
+    def _snap(self, cam, o, explicit=False):
         cam.touch()
         seq, jpg = cam.wait_frame(cam.seq, 10)
         if jpg is None: return self._send(504, (cam.error or "no frame").encode(), "text/plain")
-        try: self._send(200, process(jpg, o), "image/jpeg")
+        try:
+            n = int(o.get("avg") or 1) if explicit else max(int(o.get("avg") or 1), 4)      # stills are averaged by default
+            if n > 1:
+                d = Denoiser(n); d.MOVE = 1e9; im = d.add(jpg)
+                for _ in range(n - 1):
+                    seq, nxt = cam.wait_frame(seq, 2)
+                    if nxt is not None: im = d.add(nxt)
+                return self._send(200, process(jpg, o, im), "image/jpeg")
+            self._send(200, process(jpg, o), "image/jpeg")
         except Exception as e: self._send(500, f"processing failed: {e}".encode(), "text/plain")
 
     def _stream(self, cam, o):
@@ -584,12 +655,13 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header("Content-Type", "multipart/x-mixed-replace; boundary=frame")
             self.send_header("Cache-Control", "no-store"); self.end_headers()
             seq, last, dt = 0, 0.0, (1.0 / o["fps"] if o.get("fps") else 0.0)
+            dn = Denoiser(o["avg"]) if int(o.get("avg") or 1) > 1 else None
             while True:
                 seq2, jpg = cam.wait_frame(seq, 5)
                 if jpg is None: continue
                 seq = seq2
                 if dt and time.time() - last < dt: continue
-                out = process(jpg, o)
+                out = process(jpg, o, dn.add(jpg)) if dn else process(jpg, o)
                 self.wfile.write(b"--frame\r\nContent-Type: image/jpeg\r\nContent-Length: %d\r\n\r\n" % len(out))
                 self.wfile.write(out); self.wfile.write(b"\r\n"); self.wfile.flush()
                 last = time.time()
@@ -753,7 +825,7 @@ def cmd_probe(a):
     for c in discover():
         key = f"{c['vid']}:{c['pid']}"
         match = f"usb:{key}" if c["vid"] and claimed[key] == 1 else f"path:{c['stable']}"
-        skeleton.append({"name": slug(c["product"] or c["label"]), "match": match, "size": "1280x720", "fps": 10,
+        skeleton.append({"name": slug(c["product"] or c["label"]), "match": match, "size": "1920x1080", "fps": 10,
                          "controls": {}, "opts": {}})
     print(json.dumps({"port": 8808, "listen": "127.0.0.1", "cameras": skeleton}, indent=2))
 
@@ -793,7 +865,7 @@ def cmd_doctor(a):
         if not acc and "video" not in groups and fix:
             subprocess.run(sudo + ["usermod", "-aG", "video", user]); print("     added to 'video' group: log out and in again")
         if shutil.which("ffmpeg") and acc:
-            tmp = Cam("probe", c["stable"], {"fps": 10, "size": "1280x720"}, c)
+            tmp = Cam("probe", c["stable"], {"fps": 10, "size": "1920x1080"}, c)
             try:
                 r = subprocess.run(Cam.BASE + tmp._input()[0] + ["-frames:v", "3", "-f", "null", "-"],
                                    capture_output=True, text=True, timeout=25)

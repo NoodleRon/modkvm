@@ -96,7 +96,7 @@ TOOLS = [
      {"x1": FR, "y1": FR, "x2": FR, "y2": FR, "duration": {"type": "number"}}, ["x1", "y1", "x2", "y2"]),
     ("phone_home_pointer", "Re-home the pointer to the top-left corner (fixes drift after many moves).", {}, []),
     ("phone_look", "Take a photo of the phone screen from the webcam (pbsee; uses the camera linked to the active phone in the web console). Optionally wait `settle` seconds first so the "
-                   "screen has updated. Returns the image plus the change score.",
+                   "screen has updated. Returns the image plus the change score. Stills are averaged over several frames to cut sensor noise; add 'avg=1' to disable.",
      {"settle": {"type": "number"}, "camera": {"type": "string"}, "query": {"type": "string",
       "description": "extra pbsee options, e.g. 'w=900&contrast'"}}, []),
 ]

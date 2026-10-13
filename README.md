@@ -73,6 +73,8 @@ Typing goes straight to the active device. `pb` prints, right under the command 
 
 **Calibrate first** (web console, Link sheet, view row): Calibrate → tap the 4 screen corners (TL, TR, BR, BL) on the live image. Web taps map onto this view.
 
+**Sharper text:** stills (`/snap`, MCP `phone_look`) average 4 frames by default (`avg=1` turns it off) and the live view can too (Denoise slider, `avg`, 1-16): a running mean that restarts whenever the picture moves, so sensor grain drops while text stays crisp. Lock focus freezes autofocus where it settled (stops hunting; saved in `controls`, undone with Unlock focus; `POST /focus/<cam>` `{"lock":true}`). Capture defaults to 1920x1080 MJPEG, output JPEG is quality 90 at full chroma, resizes use Lanczos, warps bicubic. For the rest: light the screen evenly, keep the camera square and close, and set the phone brightness mid-high.
+
 Cameras are data: `pbsee.json`, one entry per camera (`match`: `usb:VID:PID` / `name:` / `serial:` / `path:`; `size`, `fps`, `controls`, `opts`); `pbs probe` writes it. Localhost-only by default; beyond that a token is required.
 
 ## Web console
@@ -82,7 +84,8 @@ Live image, device chips (tap to switch; a chip shows its linked view), key / se
 - **◎ direct** (default on desktop): the image maps to the device screen: tap = click there, drag = swipe, long-press / two-finger tap = right click, wheel / two-finger drag = scroll. **▭ pad** (default on touch screens): the image is a relative trackpad. The button switches; the choice is remembered per browser.
 - **⌨** opens the device keyboard; on desktop just type. Keys, Ctrl/Alt/Cmd combos, F-keys, arrows forwarded.
 - **⋯** dock, collapsible, three tabs: **Tray** (esc tab ⌫ ⏎ arrows, sticky ⌃ ⌥ ⌘ ⇧, ⌂ = Cmd+H, Cmd+Space, Cmd+Tab; default on phones), **Keys** (full on-screen board, sticky modifiers, keys flash as they're sent), **Pad** (trackpad surface with a touch dot, tap = click, two fingers = scroll, Left / Middle / Right).
-- **Link** sheet: devices on the left, views (cameras) on the right. Drag a dot to the other side (or tap a device, then a view) to link them; × on the line unlinks. Choosing a device shows its linked view, and MCP `phone_look` uses it. Row chevrons expand the settings: device (solo, server trackpad, reconnect / disconnect, home pointer), view (rotate, tilt ±20° for a crooked camera, gray, contrast, sharpness, width, calibrate / clear). The switch above Views turns the camera server on or off; "This server" at the top renames the server. Links are stored in `portabotty.json`.
+- **Link** sheet: devices on the left, views (cameras) on the right. Drag a dot to the other side (or tap a device, then a view) to link them; × on the line unlinks. Choosing a device shows its linked view, and MCP `phone_look` uses it. Row chevrons expand the settings: device (solo, server trackpad, reconnect / disconnect, home pointer), view (rotate, tilt ±20° for a crooked camera, gray, contrast, denoise, sharpness, width, lock / unlock focus, calibrate / clear). The switch above Views turns the camera server on or off; "This server" at the top renames the server. Links are stored in `portabotty.json`.
+- **View only** (eye button in the bar): hides and disables every console input (pointer, keyboard, key tray, pad); the page becomes a viewer. Saved in `portabotty.json`. Control continues through MCP and the Key API; only the console's `/kb` input calls are refused (403).
 
 ## Remote access (PBRELAY)
 Reach the console from anywhere without opening a port on your network. Run `relay.py` on any small public host (stdlib only; put TLS in front, e.g. Caddy or an AWS load balancer), and your server dials out to it.

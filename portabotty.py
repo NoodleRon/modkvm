@@ -14,8 +14,9 @@ KB_URL = os.environ.get("PBKEY_URL", f"http://127.0.0.1:{KB_PORT}").rstrip("/")
 SB_URL = os.environ.get("PBSEE_URL", f"http://127.0.0.1:{SB_PORT}").rstrip("/")
 CONFIG = os.environ.get("PORTABOTTY_CONFIG", os.path.join(HERE, "portabotty.json"))
 KB_PATHS = {"status", "use", "drop", "solo", "rename", "mouse", "type", "key", "goto", "click", "scroll", "drag", "move", "home"}
+INPUT_PATHS = {"type", "key", "goto", "click", "scroll", "drag", "move", "home"}      # blocked on the web console while view-only
 SB_GET = {"cams", "status", "stream", "snap"}
-SB_POST = {"calibrate", "save"}
+SB_POST = {"calibrate", "save", "focus"}
 SEE = {}          # set by PBKEY: {"state": () -> bool, "set": (bool) -> bool}  (camera server on/off)
 
 
@@ -88,7 +89,7 @@ def hub_status():
         except Exception:
             pass
     return {"kb": kb_up, "sb": sb_up, "cam": cam, "status": status, "links": load_cfg().get("links", {}),
-            "see_on": SEE.get("state", lambda: None)()}
+            "see_on": SEE.get("state", lambda: None)(), "viewonly": bool(load_cfg().get("viewonly"))}
 
 
 # ---------------------------------------------------------------- gateway (web console + proxies)
@@ -130,6 +131,7 @@ svg.i{width:19px;height:19px;stroke:currentColor;fill:none;stroke-width:1.8;stro
 #tpad:after{content:"";position:absolute;inset:0;background:radial-gradient(circle at 50% 50%,var(--acc2),transparent 60%);opacity:.5;pointer-events:none}
 #tdot{position:absolute;width:26px;height:26px;margin:-13px 0 0 -13px;border-radius:50%;background:var(--acc);opacity:0;pointer-events:none;transition:opacity .15s;z-index:1}
 #tbtn{display:flex;gap:6px;margin-top:6px}#tbtn button{flex:1;height:40px}
+body.vo #mode,body.vo #kbd,body.vo #tr,body.vo #dock,body.vo #pad{display:none!important}body.vo #stage{cursor:default}
 #kb{position:fixed;left:0;top:0;width:1px;height:1px;opacity:0;border:0;padding:0}
 /* link sheet */
 #sheet{position:fixed;inset:0;z-index:20;display:none}#sheet.open{display:block}
@@ -163,7 +165,7 @@ input[type=range]{width:100%;max-width:130px;accent-color:var(--acc)}select{font
 .empty{color:var(--dim);font-size:13px;padding:6px 2px}
 </style>
 <div id=bar><span class=brand id=brand>Portabotty</span><span class=pill id=kbi><i></i>key</span><span class=pill id=sbi><i></i>see</span><div id=dev></div>
-<button id=mode aria-label=mode></button><button id=kbd aria-label=keyboard></button><button id=tr aria-label=keys></button><button id=lk aria-label=link></button></div>
+<button id=mode aria-label=mode></button><button id=kbd aria-label=keyboard></button><button id=tr aria-label=keys></button><button id=vo aria-label=view></button><button id=lk aria-label=link></button></div>
 <div id=stage><div id=none><span id=nt></span><button id=ns style=display:none>Start camera</button></div><div id=wrap><img id=cam alt=""><i id=ptr></i><div id=pad></div></div><div id=calbar><span id=ct></span><button id=cx>Cancel</button></div></div>
 <div id=dock><div id=dtabs><div class=seg><button id=tabt>Tray</button><button id=tabk>Keys</button><button id=tabp>Pad</button></div><span></span></div>
 <div id=tray></div><div id=board></div><div id=tpd style=display:none><div id=tpad><i id=tdot></i></div><div id=tbtn><button id=tl>Left</button><button id=tm>Middle</button><button id=trr>Right</button></div></div></div><input id=kb autocapitalize=off autocorrect=off autocomplete=off spellcheck=false aria-label=keyboard>
@@ -179,11 +181,12 @@ const IC={mode:'<svg class=i viewBox="0 0 24 24"><circle cx=12 cy=12 r=8 /><circ
  tr:'<svg class=i viewBox="0 0 24 24"><path d="M5 12h.01M12 12h.01M19 12h.01" stroke-width=3 /></svg>',
  lk:'<svg class=i viewBox="0 0 24 24"><path d="M10 14a4 4 0 0 0 5.7 0l3-3a4 4 0 0 0-5.7-5.7l-1 1"/><path d="M14 10a4 4 0 0 0-5.7 0l-3 3a4 4 0 0 0 5.7 5.7l1-1"/></svg>',
  chev:'<svg class=i viewBox="0 0 24 24"><path d="M6 9l6 6 6-6"/></svg>'};
-$('kbd').innerHTML=IC.kbd;$('tr').innerHTML=IC.tr;$('lk').innerHTML=IC.lk;
+IC.eye='<svg class=i viewBox="0 0 24 24"><path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7S2 12 2 12z"/><circle cx=12 cy=12 r=3 /></svg>';$('vo').innerHTML=IC.eye;$('kbd').innerHTML=IC.kbd;$('tr').innerHTML=IC.tr;$('lk').innerHTML=IC.lk;
 // ---- api (serialised so keys keep their order)
 let chain=Promise.resolve();
 const raw=(p,b)=>fetch(U('/kb/'+p),{method:b===undefined?'GET':'POST',body:b===undefined?undefined:JSON.stringify(b)}).then(r=>r.json()).catch(()=>({ok:false}));
-const send=(p,b)=>chain=chain.then(()=>raw(p,b));
+let vo=false;const INP=new Set(['type','key','goto','click','scroll','drag','move','home']);
+const send=(p,b)=>vo&&INP.has(p)?Promise.resolve({ok:false}):chain=chain.then(()=>raw(p,b));
 const post=(p,b)=>fetch(U(p),{method:'POST',body:JSON.stringify(b||{})}).then(r=>r.json()).catch(()=>({}));
 // ---- state
 let hub={},devs=[],cams=[],links={},viewCam=ls.get('view')||'',lastActive=null,sel=null,expanded=new Set(),sig='',nonce=0,tick=0,camKey='',cal=null,shownKey='';
@@ -197,7 +200,7 @@ function chips(){
 }
 function poll(){
   fetch(U('/hub')).then(r=>r.json()).then(h=>{
-  hub=h;const s=h.status||{};devs=s.devices||[];links=h.links||{};if(s.name&&s.name!==$('brand').textContent){$('brand').textContent=s.name;document.title=s.name}
+  hub=h;vo=!!h.viewonly;document.body.classList.toggle('vo',vo);$('vo').classList.toggle('on',vo);dockSize();const s=h.status||{};devs=s.devices||[];links=h.links||{};if(s.name&&s.name!==$('brand').textContent){$('brand').textContent=s.name;document.title=s.name}
   $('kbi').className='pill'+(h.kb?' up':'');$('sbi').className='pill'+(h.sb?(h.cam==='live'?' up':' idle'):'');
   if(s.pointer&&!cal){$('ptr').style.cssText='display:block;left:'+s.pointer[0]*100+'%;top:'+s.pointer[1]*100+'%'}else $('ptr').style.display='none';
   if(s.active!==lastActive){lastActive=s.active;if(links[s.active]){viewCam=links[s.active];ls.set('view',viewCam)}}
@@ -225,13 +228,14 @@ setInterval(poll,1500);poll();
 // ---- modes
 let mode=(ls.get('mode')||(matchMedia('(pointer:coarse)').matches?'pad':'direct'))==='pad'?'pad':'direct';
 function setMode(m){mode=m;ls.set('mode',m);$('stage').classList.toggle('pad',m==='pad');$('mode').innerHTML=m==='pad'?IC.pad:IC.mode;$('mode').classList.toggle('on',m==='pad')}
+$('vo').onclick=()=>post('/viewonly',{on:!vo}).then(poll);
 $('mode').onclick=()=>setMode(mode==='pad'?'direct':'pad');setMode(mode);
 // ---- pointer
 const frac=(x,y)=>{const r=$('cam').getBoundingClientRect();return[Math.min(1,Math.max(0,(x-r.left)/r.width)),Math.min(1,Math.max(0,(y-r.top)/r.height))]};
 const P=new Map();let g=null,mvAcc=[0,0],mvT=0,scAcc=0;
 function flushMove(force){const n=performance.now();if(!force&&n-mvT<25)return;if(mvAcc[0]||mvAcc[1]){const dx=Math.round(mvAcc[0]),dy=Math.round(mvAcc[1]);mvAcc[0]-=dx;mvAcc[1]-=dy;mvT=n;send('move',{dx,dy})}}
 function scroll(px){scAcc+=px;const n=Math.trunc(scAcc/28);if(n){scAcc-=n*28;send('scroll',{dir:n>0?'down':'up',amount:Math.abs(n)})}}
-$('stage').addEventListener('pointerdown',e=>{e.preventDefault();if(cal||e.target.closest('#calbar,#none button'))return;$('stage').setPointerCapture(e.pointerId);P.set(e.pointerId,{x:e.clientX,y:e.clientY});
+$('stage').addEventListener('pointerdown',e=>{e.preventDefault();if(vo&&!cal)return;if(cal||e.target.closest('#calbar,#none button'))return;$('stage').setPointerCapture(e.pointerId);P.set(e.pointerId,{x:e.clientX,y:e.clientY});
   if(P.size===1)g={x0:e.clientX,y0:e.clientY,t0:performance.now(),moved:0,multi:false,type:e.pointerType,cy:e.clientY};
   else if(g){g.multi=true;g.cy=[...P.values()].reduce((a,p)=>a+p.y,0)/P.size}
   if(g&&g.type==='mouse'&&e.button===2)g.right=true;focusKb()});
@@ -271,6 +275,7 @@ function type(s){if(s.length===1)flash(s===' '?'space':s.toLowerCase());if(stick
 function key(name,extra){const m=[...(extra||[]),...sticky];clearSticky();flushTyped();flash(name);send('key',{key:m.concat(name).join('+')})}
 function flushTyped(){if(typed){clearTimeout(tt);const t=typed;typed='';send('type',{text:t})}}
 document.addEventListener('keydown',e=>{
+  if(vo)return;
   if($('sheet').classList.contains('open')){if(e.key==='Escape')closeSheet();return}
   if(e.isComposing||e.key==='Process'||e.key==='Dead'||e.key==='Unidentified')return;
   if(e.key==='F5'||e.key==='F12'||((e.ctrlKey||e.metaKey)&&e.key.toLowerCase()==='r'))return;
@@ -368,10 +373,12 @@ function camRow(c){
   m.append(setRow('Tilt',range(-20,20,.5,o.tilt||0,v=>s({tilt:v}))));
   m.append(setRow('Gray',sw(!!o.gray,v=>s({gray:v?1:0}))));
   m.append(setRow('Contrast',range(0,10,.5,o.contrast||0,v=>s({contrast:v}))));
+  m.append(setRow('Denoise',range(1,12,1,o.avg||1,v=>s({avg:v}))));
   m.append(setRow('Sharpness',range(0,3,.5,o.sharp||0,v=>s({sharp:v}))));
   const w=document.createElement('select');[[0,'native'],[480,'480'],[720,'720'],[960,'960'],[1280,'1280']].forEach(([v,l])=>{const op=document.createElement('option');op.value=v;op.textContent=l;if((o.w||0)==v)op.selected=true;w.append(op)});w.onchange=()=>s({w:+w.value});
   m.append(setRow('Width',w));
   const b=document.createElement('div');b.className='btns';
+  b.append(btn(c.focus_locked?'Unlock focus':'Lock focus',()=>post('/focus/'+encodeURIComponent(c.name),{lock:!c.focus_locked}).then(()=>{poll()})));
   b.append(btn(o.warp?'Recalibrate':'Calibrate',()=>{viewCam=c.name;startCal()}));
   if(o.warp)b.append(btn('Clear',()=>post('/calibrate/'+encodeURIComponent(c.name),{clear:true}).then(()=>{nonce++;poll()})));
   linked.forEach(a=>b.append(btn('Unlink '+((devOf(a)||{}).name||a).slice(0,14),()=>setLink(a,null))));
@@ -380,7 +387,7 @@ function saveCam(name,patch){const c=camOf(name);if(c)c.opts=Object.assign({},c.
 function setLink(addr,cam){return post('/links',{addr,cam}).then(j=>{links=j.links||{};if(cam&&hub.status&&hub.status.active===addr){viewCam=cam;ls.set('view',cam)}sig='';poll()})}
 function render(){
   if(!$('sheet').classList.contains('open'))return;
-  const s=JSON.stringify([devs,cams.map(c=>[c.name,c.label,c.present,c.opts]),links,[...expanded],sel,viewCam,hub.see_on,(hub.status||{}).solo,(hub.status||{}).trackpad]);
+  const s=JSON.stringify([devs,cams.map(c=>[c.name,c.label,c.present,c.opts,c.focus_locked]),links,[...expanded],sel,viewCam,hub.see_on,(hub.status||{}).solo,(hub.status||{}).trackpad]);
   if(s===sig)return;
   if(document.activeElement&&document.activeElement.closest&&document.activeElement.closest('.more')&&document.activeElement.tagName==='SELECT')return;
   sig=s;
@@ -537,7 +544,14 @@ class Handler(BaseHTTPRequestHandler):
                 try: on = bool(json.loads(self._body()).get("on"))
                 except Exception: return self._json({"ok": False}, 400)
                 return self._json({"ok": True, "on": SEE["set"](on)})
+            if parts == ["viewonly"]:
+                try: on = bool(json.loads(self._body()).get("on"))
+                except Exception: return self._json({"ok": False}, 400)
+                cfg = load_cfg(); cfg["viewonly"] = on; save_cfg(cfg)
+                return self._json({"ok": True, "viewonly": on})
             if parts[0:1] == ["kb"] and len(parts) == 2 and parts[1] in KB_PATHS:
+                if parts[1] in INPUT_PATHS and load_cfg().get("viewonly"):
+                    return self._json({"ok": False, "error": "view only"}, 403)
                 return self._proxy("POST", KB_URL, "/" + parts[1], "", kb_token(), self._body())
             if parts[0:1] and parts[0] in SB_POST and len(parts) == 2:
                 return self._proxy("POST", SB_URL, u.path, u.query, sb_token(), self._body())
