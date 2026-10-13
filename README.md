@@ -12,12 +12,14 @@ Your Linux server as a Bluetooth keyboard + mouse for phones, tablets and comput
 
 ## Install (once)
 ```
-mkdir -p ~/portobotty && cd ~/portobotty     # put portobotty.py pbkey.py pbsee.py pbmcp.py here
+git clone https://github.com/ismailgunacar/portobotty.git ~/portobotty && cd ~/portobotty   # private repo: needs a GitHub login or SSH key on the server
 sudo apt install python3-evdev tmux          # trackpad capture; tmux for SSH
 python3 pbsee.py doctor --fix                # camera packages, driver, video group (re-login after)
 sudo python3 portobotty.py --install         # creates pb, pbk, pbkb, pbs, pbc (works in any shell, console or SSH)
 pb
 ```
+Update later: `cd ~/portobotty && git pull`.
+
 **Coming from the earlier names:** delete `~/bridge.py`, `~/camview.py`, and the `kb` alias in `~/.bashrc` (that alias is why `kb` was missing on the laptop console). Rename `camview.json` to `pbsee.json` to keep camera settings. Active phone and solo reset once. The server now advertises as "Portobotty <hostname>"; existing bonds keep working. Old unit/process names are killed by `pbk`.
 
 ## What `pb` does
