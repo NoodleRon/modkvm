@@ -725,7 +725,7 @@ class App:
             say(f"{mark} {i:<5}{b['name'][:24]:<26}{b['addr']:<19}{self.status(b)}")
         onoff = lambda v: "on" if v else "off"
         say(f"\n  cam [c] {SEE_DOT[self.see_now()]}" + (" | calibrate [h]" if MOUSE else ""))
-        say(f"\n  name [n] {self.server_name} | keyboard [k] {onoff(self.kbd)} | solo [s] {onoff(self.solo)}")
+        say(f"\n  keyboard [k] {onoff(self.kbd)} | name [n] {self.server_name} | solo [s] {onoff(self.solo)}")
         if MOUSE:
             say(f"  mouse [m] {(('map' if self.term_map else 'relative') + ' [a]') if self.mouse_term else 'off'}"
                 f" | trackpad [t] {onoff(self.pads)}")

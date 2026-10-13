@@ -43,7 +43,7 @@ pb
 Update: `cd ~/portabotty && git pull`.
 
 ## PBKEY
-Typing goes straight to the active device. `pb` prints, right under the command and in this order: the title line (`Portabotty 0.0.00001: Ctrl+] for menu, then press [key]`), the clickable `Web: <link>` (with `hosted locally | [u] get paid hosting (coming soon)`, or `hosted ● <relay> | [u] change` when a relay is set), `API: <url> | Token file: <path>`, the device list, the menu keys (each key next to its indicator: `name [n]`, `cam [c] ● live`, `keyboard [k] on`, `solo [s] on`, `mouse [m] map [a]`, `trackpad [t]`), then a running log. Nothing is pinned or cleared; the terminal scrolls like any program. `Ctrl+]` then a key only logs what changed (`Solo ON`, `Mouse off`, ...); `Ctrl+]` then Enter prints it all again. `Ctrl+]` then:
+Typing goes straight to the active device. `pb` prints, right under the command and in this order: the title line (`Portabotty 0.0.00001: Ctrl+] for menu, then press [key]`), the clickable `Web: <link>` (with `hosted locally | [u] get paid hosting (coming soon)`, or `hosted ● <relay> | [u] change` when a relay is set), `API: <url> | Token file: <path>`, the device list, the menu keys (each key next to its indicator: `cam [c] ● live`, `keyboard [k] on`, `name [n]`, `solo [s] on`, `mouse [m] map [a]`, `trackpad [t]`), then a running log. Nothing is pinned or cleared; the terminal scrolls like any program. `Ctrl+]` then a key only logs what changed (`Solo ON`, `Mouse off`, ...); `Ctrl+]` then Enter prints it all again. `Ctrl+]` then:
 
 | key | does |
 |---|---|
