@@ -6,7 +6,7 @@ Your Linux server as a Bluetooth keyboard + mouse for phones, tablets and comput
 | part | commands | job |
 |---|---|---|
 | **PBKEY** | `pb` · `pbk` · `pbkb` | the terminal: keyboard + mouse over Bluetooth, camera status, web link. Runs as root |
-| **PBSEE** | `pbs` · `pbc` | webcam server: live / idle / stopped, calibration. Optional: PBKEY starts it with `c` |
+| **PBSEE** | `pbs` · `pbc` | webcam server: live / idle / off, calibration. Optional: PBKEY starts it with `c` |
 
 One inline terminal (`pb`). The web console and MCP are served by it; either part works without the other.
 
@@ -43,7 +43,7 @@ pb
 Update: `cd ~/portabotty && git pull`.
 
 ## PBKEY
-Typing goes straight to the active device. The top line stays pinned: `Portabotty: Menu Ctrl+], then press the key in [ ]`. The status lines show each key next to its indicator (`name [n]`, `cam [c] ● live`, `keyboard [k] ON`, `solo [s] ON`, `mouse [m] map [a]`, `trackpad [t]`) and the clickable web link. The screen is never cleared. The status block prints once at start; `Ctrl+]` then a key only logs what changed (`Solo ON`, `Mouse off`, ...), and `Ctrl+]` then Enter prints the status block again. `Ctrl+]` then:
+Typing goes straight to the active device. The top line stays pinned: `Portabotty 0.0.00001: Ctrl+] for menu, then press [key]`, with the clickable `Web: <link>` and `API: <url> | Token file: <path>` pinned under it (the Web row also carries `upgrade [u] hosting off`). The status lines show each key next to its indicator (`name [n]`, `cam [c] ● live`, `keyboard [k] ON`, `solo [s] ON`, `mouse [m] map [a]`, `trackpad [t]`). The screen is never cleared. The status block prints once at start; `Ctrl+]` then a key only logs what changed (`Solo ON`, `Mouse off`, ...), and `Ctrl+]` then Enter prints the status block again. `Ctrl+]` then:
 
 | key | does |
 |---|---|
@@ -55,16 +55,17 @@ Typing goes straight to the active device. The top line stays pinned: `Portabott
 | `a` | mouse: **map** (window = device screen) / **relative** |
 | `h` | re-home pointer to top-left |
 | `+` `-` | map size ±10 % |
-| `c` | camera (PBSEE) on / off; **on by default**, the last choice is remembered |
+| `c` | camera (PBSEE) on / off; **on by default** (`◐ on, idle` = running, nobody watching), the last choice is remembered |
 | `n` | rename the emulated device (the Bluetooth name phones see): type, Enter saves, Esc cancels |
 | `d` / `f` | drop / forget (y) |
-| `x` / `q` | restart (re-runs Key, reconnects the active device) / quit |
+| `u` | upgrade: hosting through a relay (URL + agent token; `● host` connected, `○ host` unreachable) |
+| `r` / `q` | restart (restarts the Bluetooth service, re-runs Key, reconnects the active device) / quit |
 | Enter | print the status block again |
 
 - **Mouse** is on by default. **Over SSH it is the pointer of the computer you SSH from** (terminal mouse; on when the terminal reports it, or is xterm-family; it disables text selection there). **At the server itself** a trackpad or USB mouse is captured automatically (the server's cursor freezes while captured): relative, lift-and-continue; tap = click, two-finger tap = right click, two-finger drag = scroll; `Ctrl+]` `t` toggles it. `--pad` forces the server's pad over SSH.
 - The target needs a pointer: iPhone/iPad show a round translucent dot once AssistiveTouch is on. If the pad does nothing: `sudo python3 pbkey.py --pads` lists input devices and counts live motion events (needs `python3-evdev`).
 - **Map** estimates position (HID is relative, targets accelerate); edges self-correct. Calibrate once: `Ctrl+]` `h`, move to the window's bottom-right; pointer short of the corner → `+`, past → `-`.
-- Flags: `--no-pad`, `--pad`, `--pads`, `--no-term-mouse`, `--no-mouse` (keyboard-only; re-pair), `--no-api`, `--api-port`, `--api-listen`, `--no-web`, `--web-port`, `--web-listen`, `--web-token`.
+- Flags: `-v` (show start-up log lines), `--qr` (print a QR code for the web link), `--no-pad`, `--pad`, `--pads`, `--no-term-mouse`, `--no-mouse` (keyboard-only; re-pair), `--no-api`, `--api-port`, `--api-listen`, `--no-web`, `--web-port`, `--web-listen`, `--web-token`.
 - **Targets:** iPhone, iPad, Mac, Windows, Linux, Android. iPhone needs AssistiveTouch (Settings > Accessibility > Touch) for a pointer. Cmd = GUI/Win key. Keys are sent as a US layout. iOS caches the HID descriptor: after `--no-mouse`, forget the bond on both sides and re-pair.
 
 ## PBSEE
@@ -75,7 +76,7 @@ Typing goes straight to the active device. The top line stays pinned: `Portabott
 Cameras are data: `pbsee.json`, one entry per camera (`match`: `usb:VID:PID` / `name:` / `serial:` / `path:`; `size`, `fps`, `controls`, `opts`); `pbs probe` writes it. Localhost-only by default; beyond that a token is required.
 
 ## Web console
-Served by PBKEY on port 8800, on the local network by default. The link carries a short token (6 lowercase characters, easy to type on a phone; generated once, kept in `portabotty.json`, typing it in capitals works too). Wrong guesses are rate limited (8 per minute per address). `--web-listen 127.0.0.1` keeps it local; `--no-web` turns it off. The status block shows the link (clickable in terminals that support links), or why it's off. `pbk --qr` also prints a QR code to scan with a phone. Not reachable from another computer: `sudo ufw allow 8800/tcp` (Key prints this when ufw blocks it) and use the printed link including `?t=` (without the token: 401).
+Served by PBKEY on port 8800, on the local network by default. The link carries a short token (6 lowercase characters, easy to type on a phone; generated once, kept in `portabotty.json`, typing it in capitals works too). Wrong guesses are rate limited (8 per minute per address). `--web-listen 127.0.0.1` keeps it local; `--no-web` turns it off. The link is pinned under the title (clickable in terminals that support links), or says why it's off. `pbk --qr` also prints a QR code to scan with a phone. Not reachable from another computer: `sudo ufw allow 8800/tcp` (Key prints this when ufw blocks it) and use the printed link including `?t=` (without the token: 401).
 
 Live image, device chips (tap to switch; a chip shows its linked view), key / see pills (green up, amber idle, red stopped). Works with either part down.
 - **◎ direct** (default on desktop): the image maps to the device screen: tap = click there, drag = swipe, long-press / two-finger tap = right click, wheel / two-finger drag = scroll. **▭ pad** (default on touch screens): the image is a relative trackpad. The button switches; the choice is remembered per browser.
@@ -88,6 +89,7 @@ Reach the console from anywhere without opening a port on your network. Run `rel
 ```
 python3 relay.py --port 8080                                  # prints the access + agent tokens
 pb --relay https://relay.example.com --relay-token AGENT_TOKEN   # saved; later runs just `pb`
+                                                                  # or `Ctrl+]` `u`: type the relay URL and agent token, no restart; empty URL = off
 ```
 Browser and MCP: `https://relay.example.com/?t=ACCESS_TOKEN` (same pages, stream and `/mcp`). Shows "home server offline" when the server isn't connected.
 

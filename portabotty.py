@@ -645,15 +645,24 @@ def relay_agent(url, agent_token, port, local_token=""):
             try: up and up.close()
             except Exception: pass
 
+    class Relay:
+        def __init__(self): self.stop_ev = threading.Event(); self.ok = False; self.url = url
+        def stop(self): self.stop_ev.set()
+    handle = Relay()
+
     def loop():
-        while True:
+        while not handle.stop_ev.is_set():
             try:
                 with call("/_a/next", timeout=40) as r:
-                    if r.status == 200:
+                    handle.ok = True
+                    if r.status == 200 and not handle.stop_ev.is_set():
                         threading.Thread(target=serve, args=(json.loads(r.read()),), daemon=True).start()
             except Exception:
-                time.sleep(3)
+                handle.ok = False
+                handle.stop_ev.wait(3)
+        handle.ok = False
     threading.Thread(target=loop, daemon=True).start()
+    return handle
 
 
 def main():

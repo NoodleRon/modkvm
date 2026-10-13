@@ -23,9 +23,13 @@ except Exception:
 import dbus, dbus.service, dbus.mainloop.glib
 from gi.repository import GLib
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
+logging.basicConfig(level=logging.INFO if ("-v" in sys.argv or "--verbose" in sys.argv) else logging.WARNING, format="%(asctime)s [%(levelname)s] %(message)s")
 
-SEE_DOT = {"live": "● live", "idle": "◐ idle", "stopped": "○ stopped"}
+def _version():
+    try: return open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "VERSION")).read().strip()
+    except OSError: return "0.0.00001"
+VERSION = _version()
+SEE_DOT = {"live": "● live", "idle": "◐ on, idle", "stopped": "○ off"}
 HID_UUID = "00001124-0000-1000-8000-00805f9b34fb"
 PSM_CTRL, PSM_INTR = 0x11, 0x13
 ADAPTER = "/org/bluez/hci0"
@@ -433,7 +437,7 @@ def raw_out(s):
 def say(msg="", end="\n"):
     print(msg, end=end, flush=True)
 
-_HDR = {"on": False, "redraw": False}
+_HDR = {"on": False, "redraw": False, "web": None, "api": None, "host": None, "n": 1}
 
 
 def hyperlink(url, text=None):
@@ -442,13 +446,38 @@ def hyperlink(url, text=None):
 
 
 def header_text(cols):
-    text = "Portabotty: Menu Ctrl+], then press the key in [ ]"
+    text = f"Portabotty {VERSION}: Ctrl+] for menu, then press [key]"
     return text if len(text) <= cols else text[:cols - 1] + "…"
 
 
+def header_lines(cols):
+    """[(visible text, text to print)] for each pinned row: the title, then the web link."""
+    t = header_text(cols)
+    out = [(t, f"\x1b[7m{t.ljust(cols)}\x1b[0m")]
+    web = _HDR["web"]() if _HDR["web"] else None
+    if web:
+        link, tail = web
+        host = _HDR["host"]() if _HDR["host"] else None
+        if host: tail += f" | upgrade [u] hosting {host}"
+        room = cols - len("Web: ")
+        if len(link) > room:
+            link, tail = "", (link + tail)
+        tail = tail if len(link) + len(tail) <= room else tail[:max(0, room - len(link) - 1)] + "…"
+        vis = f"Web: {link}{tail}"
+        out.append((vis, f"Web: {hyperlink(link) if link else ''}{tail}"))
+    api = _HDR["api"]() if _HDR["api"] else None
+    if api:
+        api = api if len(api) <= cols else api[:cols - 1] + "…"
+        out.append((api, api))
+    return out
+
+
 def header_draw(cols, rows):
-    """Pinned top line; everything else scrolls underneath it."""
-    raw_out(f"\x1b7\x1b[1;1H\x1b[2K\x1b[7m{header_text(cols).ljust(cols)[:cols]}\x1b[0m\x1b[2;{rows}r\x1b8")
+    """Pinned top lines; everything else scrolls underneath them."""
+    lines = header_lines(cols)
+    _HDR["n"] = len(lines)
+    raw_out("\x1b7" + "".join(f"\x1b[{i};1H\x1b[2K{ren}" for i, (vis, ren) in enumerate(lines, 1))
+            + f"\x1b[{len(lines) + 1};{rows}r\x1b8")
 
 
 def cursor_row(fd, timeout=0.3):
@@ -476,11 +505,12 @@ def cursor_row(fd, timeout=0.3):
 
 
 def header_on(cols, rows, row=None):
-    """Pin the top line without wiping the screen: push one line into scrollback, open row 1."""
+    """Pin the top lines without wiping the screen: push lines into scrollback, open rows 1..n."""
     _HDR["on"] = True
-    raw_out(f"\x1b[{rows};1H\n\x1b[1;1H\x1b[L")
+    n = len(header_lines(cols))
+    raw_out(f"\x1b[{rows};1H" + "\n" * n + "\x1b[1;1H" + "\x1b[L" * n)
     header_draw(cols, rows)
-    raw_out(f"\x1b[{max(2, row or 2)};1H")
+    raw_out(f"\x1b[{max(n + 1, row or n + 1)};1H")
 
 
 def header_off():
@@ -724,6 +754,7 @@ class App:
         self.map_gain = float(st.get("map_gain", 1.0))
         self.vpos = None                       # where we believe the phone's pointer is (counts); None = unknown
         self.restart = False
+        self.api_info = ""; self.web_port = 0; self.web_tok = ""; self.relay = None
         self.kbd = bool(st.get("keyboard", True))
         self.api_lock = threading.RLock()
         self.hid = HID(self.on_change)
@@ -743,7 +774,6 @@ class App:
 
     def show(self):
         bl = bonds(self.bus)
-        if self.web_url: say(f"\n  {self.web_text()}")
         if not bl:
             say("No bonds.")
             return bl
@@ -756,7 +786,7 @@ class App:
         say(f"\n  name [n] {self.server_name} | cam [c] {SEE_DOT[self.see_now()]}"
             f" | keyboard [k] {'ON' if self.kbd else 'OFF'} | solo [s] {'ON' if self.solo else 'OFF'}")
         say(ptr)
-        say("  pair [p] | drop [d] | forget [f] | restart [x] | quit [q]\n")
+        say("  pair [p] | drop [d] | forget [f] | restart [r] | quit [q]\n")
         return bl
 
     def banner(self):
@@ -1016,6 +1046,41 @@ class App:
         say("Cancelled."); return None
 
     # ---------- see (camera) + web indicators ----------
+    def hosting_text(self):
+        if not self.relay or self.relay.stop_ev.is_set(): return "off"
+        return ("● " if self.relay.ok else "○ ") + re.sub(r"^https?://", "", self.relay.url).rstrip("/")
+
+    def start_hosting(self, url, token):
+        """Dial out to a relay (no inbound port): remembered in portabotty.json. Empty URL turns it off."""
+        if self.relay: self.relay.stop(); self.relay = None
+        cfg = web.load_cfg()
+        if url and token and web and self.web_port:
+            self.relay = web.relay_agent(url, token, self.web_port, self.web_tok)
+            cfg["relay"], cfg["relay_token"] = url, token
+        else:
+            cfg.pop("relay", None); cfg.pop("relay_token", None)
+        if web: web.save_cfg(cfg)
+        return self.hosting_text()
+
+    def hosting(self, fd):
+        if not web or not self.web_port:
+            say("Hosting needs the web console"); return
+        cfg = web.load_cfg()
+        url = self.read_line(fd, "Relay URL (empty = off): ", cfg.get("relay", ""))
+        if url is None: say("Cancelled."); return
+        if not url:
+            self.start_hosting("", ""); say("Hosting off"); return
+        tok = self.read_line(fd, "Agent token: ", cfg.get("relay_token", ""))
+        if not tok: say("Cancelled."); return
+        say(f"Hosting {self.start_hosting(url.rstrip('/'), tok)}")
+
+    def web_header(self):
+        """(link, trailing text) for the pinned web row, or None when there is no web console."""
+        if not self.web_url: return None
+        if self.web_link and self.web_url.startswith(self.web_link):
+            return self.web_link, self.web_url[len(self.web_link):]
+        return "", self.web_url
+
     def web_text(self):
         if self.web_link and self.web_url.startswith(self.web_link):
             return hyperlink(self.web_link) + self.web_url[len(self.web_link):]
@@ -1035,7 +1100,7 @@ class App:
         """Inline indicator: prints a line only when PBSEE changes state (live / idle / stopped)."""
         st = self.see_now()
         if self.see_last is not None and st != self.see_last:
-            say(f"{SEE_DOT[st]} see")
+            say(f"cam {SEE_DOT[st]}")
         self.see_last = st
 
     def see_running(self):
@@ -1280,14 +1345,15 @@ class App:
         elif k == "c": self.toggle_see()
         elif k == "n": self.rename_server(fd)
         elif k == "k": self.toggle_keyboard()
+        elif k == "u": self.hosting(fd)
         elif k == "d":
             b = self.ask_target("Drop", fd)
             if b: self.drop(b)
         elif k == "f":
             b = self.ask_target("Forget", fd)
             if b: self.forget(b, fd)
-        elif k == "x":
-            self.restart = True; self.shutdown(bye="Restarting."); return
+        elif k == "r":
+            self.restart = True; self.shutdown(bye="Restarting (Bluetooth too)."); return
         elif k == "q":
             self.shutdown(); return
         self.banner()
@@ -1363,6 +1429,8 @@ class App:
         fd = sys.stdin.fileno()
         time.sleep(0.5)
         cols, rows = self.term_size()[:2]
+        _HDR["web"] = self.web_header; _HDR["api"] = lambda: self.api_info; _HDR["host"] = self.hosting_text
+        self.host_last = None
         header_on(cols, rows, cursor_row(fd))
         bl = self.show()
         if "--qr" in sys.argv: self.show_web()
@@ -1392,6 +1460,8 @@ class App:
                     self.last_scan = time.time(); self.scan_pads()
                 if time.time() - self.last_see_check > 2:
                     self.last_see_check = time.time(); self.check_see()
+                    ht = self.hosting_text()
+                    if ht != self.host_last: self.host_last = ht; _HDR["redraw"] = True
         except Exception as e:
             say(f"console error: {e}")
         finally:
@@ -1523,7 +1593,8 @@ def main():
         tok = load_token()
         try:
             api_srv = make_api(app, tok, host, port)
-            logging.info(f"API on http://{host}:{port}  token file: {TOKEN_FILE}")
+            app.api_info = f"API: http://{host}:{port} | Token file: {TOKEN_FILE}"
+            logging.info(app.api_info)
         except OSError as e:
             logging.warning(f"API not started: {e}")
         if "--no-web" in sys.argv: pass
@@ -1542,11 +1613,8 @@ def main():
                 if fw: app.web_url += f"   (ufw blocks LAN: {fw})"
                 cfg = web.load_cfg()
                 ru, rt = argval("--relay", cfg.get("relay", "")), argval("--relay-token", cfg.get("relay_token", ""))
-                if ru and rt:
-                    if (ru, rt) != (cfg.get("relay"), cfg.get("relay_token")):
-                        cfg["relay"], cfg["relay_token"] = ru, rt; web.save_cfg(cfg)
-                    web.relay_agent(ru, rt, wp, wtok)
-                    app.web_url += "  relay: " + ru.rstrip("/") + "/" + ("?t=<access token>")
+                app.web_port, app.web_tok = wp, wtok
+                if ru and rt: app.start_hosting(ru.rstrip("/"), rt)
             except OSError as e:
                 app.web_url = f"off ({e.strerror or e}: port {wp} busy? sudo pkill -f '[p]bkey\\.py')"
     loop = GLib.MainLoop()
@@ -1571,6 +1639,9 @@ def main():
         try: agent_manager.UnregisterAgent("/pbkey/agent")
         except Exception: pass
         if app.restart:
+            try: subprocess.run(["systemctl", "restart", "bluetooth"], timeout=30, capture_output=True)
+            except Exception: pass
+            time.sleep(2)
             os.execv(sys.executable, [sys.executable] + sys.argv)
 
 if __name__ == "__main__":
