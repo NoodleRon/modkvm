@@ -786,7 +786,7 @@ class App:
         say(f"\n  name [n] {self.server_name} | cam [c] {SEE_DOT[self.see_now()]}"
             f" | keyboard [k] {'ON' if self.kbd else 'OFF'} | solo [s] {'ON' if self.solo else 'OFF'}")
         say(ptr)
-        say("  pair [b] | drop [d] | forget [f] | restart [r] | quit [q]\n")
+        say("  pair [p] | drop [d] | forget [f] | restart [r] | quit [q]\n")
         return bl
 
     def banner(self):
@@ -1052,7 +1052,7 @@ class App:
 
     def hosting_label(self):
         ht = self.hosting_text()
-        return "hosted locally | [p] get paid hosting (coming soon)" if ht == "off" else f"hosted {ht} | [p] change"
+        return "hosted locally | [u] get paid hosting (coming soon)" if ht == "off" else f"hosted {ht} | [u] change"
 
     def start_hosting(self, url, token):
         """Dial out to a relay (no inbound port): remembered in portabotty.json. Empty URL turns it off."""
@@ -1329,7 +1329,7 @@ class App:
         if k.isdigit() and k != "0":
             b = self.pick(k)
             if b: self.use(b)
-        elif k == "b": self.pair()
+        elif k == "p": self.pair()
         elif k == "s": self.toggle_solo()
         elif k == "m":
             if MOUSE: self.set_term_mouse(not self.mouse_term)
@@ -1349,7 +1349,7 @@ class App:
         elif k == "c": self.toggle_see()
         elif k == "n": self.rename_server(fd)
         elif k == "k": self.toggle_keyboard()
-        elif k == "p": self.hosting(fd)
+        elif k == "u": self.hosting(fd)
         elif k == "d":
             b = self.ask_target("Drop", fd)
             if b: self.drop(b)
