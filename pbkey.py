@@ -8,7 +8,7 @@ Mouse (terminal window + server trackpad) is ON by default when detected.
 Also serves a local HTTP API (127.0.0.1:8809, token file next to this script) and, with portabotty.py alongside, the web
 console + MCP (http://localhost:8800). See (webcam) shows as an indicator line; c starts/stops it, w prints the web link.
 Flags: --no-mouse (keyboard-only descriptor; re-pair after changing) | --no-pad | --no-term-mouse | --no-api | --no-web
-       --api-port N | --api-listen ADDR | --web-port N | --web-listen ADDR | --web-token T
+       --api-port N | --api-listen ADDR | --web-port N | --web-listen ADDR | --web-token T | --relay URL --relay-token T
        --install (creates pb, pbk, pbkb: work in any shell)
 """
 import os, re, sys, json, time, socket, struct, select, termios, atexit, subprocess, threading, signal, logging
@@ -1305,6 +1305,13 @@ def main():
                 wtok = web.web_token(wl, argval("--web-token", ""))
                 web_srv = web.start_gateway(wl, wp, wtok)
                 app.web_url = web.web_url(wl, wp, wtok)
+                cfg = web.load_cfg()
+                ru, rt = argval("--relay", cfg.get("relay", "")), argval("--relay-token", cfg.get("relay_token", ""))
+                if ru and rt:
+                    if (ru, rt) != (cfg.get("relay"), cfg.get("relay_token")):
+                        cfg["relay"], cfg["relay_token"] = ru, rt; web.save_cfg(cfg)
+                    web.relay_agent(ru, rt, wp, wtok)
+                    app.web_url += "  relay: " + ru.rstrip("/") + "/" + ("?t=<access token>")
             except OSError as e:
                 logging.warning(f"web console not started: {e}")
     loop = GLib.MainLoop()

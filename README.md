@@ -79,6 +79,14 @@ Live image, device chips (tap to switch), key / see dots (green up, amber idle, 
 - **⋯** tray: esc tab ⌫ ⏎ arrows, sticky ⌃ ⌥ ⌘ ⇧, ⌂ (Cmd+H), Cmd+Space, Cmd+Tab.
 - **⚙** calibration page.
 
+## Remote access (PBRELAY)
+Reach the console from anywhere without opening a port on your network. Run `relay.py` on any small public host (stdlib only; put TLS in front, e.g. Caddy or an AWS load balancer), and your server dials out to it.
+```
+python3 relay.py --port 8080                                  # prints the access + agent tokens
+pb --relay https://relay.example.com --relay-token AGENT_TOKEN   # saved; later runs just `pb`
+```
+Browser and MCP: `https://relay.example.com/?t=ACCESS_TOKEN` (same pages, stream and `/mcp`). Shows "home server offline" when the server isn't connected.
+
 ## MCP
 ```
 claude mcp add --transport http portabotty http://SERVER:8800/mcp?t=<token>
@@ -89,7 +97,7 @@ PBKEY API (`127.0.0.1:8809`, token in `.pbkey_token`): `GET /status`; `POST /use
 The API types into your devices and the camera shows their screens: keep localhost + token.
 
 ## Files
-Next to the scripts: `.pbkey_state.json`, `.pbkey_token`, `pbsee.json`, `portabotty.json`.
+Next to the scripts: `.pbkey_state.json`, `.pbkey_token`, `pbsee.json`, `portabotty.json` (web token, relay).
 
 ## Recovery
 - "UUID already registered": `sudo pkill -f "[p]bkey\.py"; sudo systemctl restart bluetooth`. Never Ctrl+Z.

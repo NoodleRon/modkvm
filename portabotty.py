@@ -3,7 +3,7 @@
 Normally started by PBKEY (pbk). Standalone, without PBKEY:  python3 portabotty.py [--listen ADDR] [--port N] [--token T]
 Details: README.md
 """
-import os, sys, json, time, socket, secrets, hmac, argparse, threading
+import os, sys, base64, json, time, socket, secrets, hmac, argparse, threading
 import urllib.parse, urllib.request, urllib.error
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 
@@ -351,9 +351,56 @@ def see_state():
     return "idle"
 
 
+def relay_agent(url, agent_token, port, local_token=""):
+    """Dial out to a PBRELAY and serve its queued requests from the local gateway (no inbound port needed)."""
+    import urllib.error
+    url = url.rstrip("/")
+    def call(path, data=None, timeout=40):
+        req = urllib.request.Request(url + path, data=data, method="POST" if data is not None else "GET",
+                                     headers={"Authorization": "Bearer " + agent_token})
+        return urllib.request.urlopen(req, timeout=timeout)
+
+    def serve(job):
+        rid = job["id"]; body = base64.b64decode(job["body"] or "")
+        q = job["query"]
+        hdr = {"Authorization": "Bearer " + local_token} if local_token else {}
+        if job["ctype"]: hdr["Content-Type"] = job["ctype"]
+        try:
+            up = urllib.request.urlopen(urllib.request.Request(f"http://127.0.0.1:{port}{job['path']}" + ("?" + q if q else ""),
+                                        data=body if job["method"] == "POST" else None, method=job["method"], headers=hdr), timeout=30)
+            status, ctype = up.status, up.headers.get("Content-Type", "application/octet-stream")
+        except urllib.error.HTTPError as e:
+            up, status, ctype = e, e.code, e.headers.get("Content-Type", "text/plain")
+        except Exception:
+            up, status, ctype = None, 502, "text/plain"
+        try:
+            call(f"/_a/{rid}/head", json.dumps({"status": status, "ctype": ctype}).encode())
+            while up is not None:
+                chunk = up.read1(65536) if hasattr(up, "read1") else up.read(65536)
+                if not chunk: break
+                call(f"/_a/{rid}/data", chunk)
+            call(f"/_a/{rid}/end", b"")
+        except Exception:
+            pass
+        finally:
+            try: up and up.close()
+            except Exception: pass
+
+    def loop():
+        while True:
+            try:
+                with call("/_a/next", timeout=40) as r:
+                    if r.status == 200:
+                        threading.Thread(target=serve, args=(json.loads(r.read()),), daemon=True).start()
+            except Exception:
+                time.sleep(3)
+    threading.Thread(target=loop, daemon=True).start()
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--listen"); ap.add_argument("--port", type=int); ap.add_argument("--token")
+    ap.add_argument("--relay"); ap.add_argument("--relay-token")
     a = ap.parse_args()
     cfg = load_cfg()
     listen = a.listen or cfg.get("listen", "0.0.0.0")
@@ -364,6 +411,10 @@ def main():
     except OSError as e:
         sys.exit(f"cannot listen on {listen}:{port} ({e}). Already running?")
     print(web_url(listen, port, token), flush=True)
+    ru, rt = a.relay or cfg.get("relay", ""), a.relay_token or cfg.get("relay_token", "")
+    if ru and rt:
+        if (ru, rt) != (cfg.get("relay"), cfg.get("relay_token")): cfg["relay"], cfg["relay_token"] = ru, rt; save_cfg(cfg)
+        relay_agent(ru, rt, port, token)
     try:
         while True: time.sleep(3600)
     except KeyboardInterrupt:
