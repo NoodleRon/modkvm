@@ -122,5 +122,5 @@ The API types into your devices and the camera shows their screens: keep localho
 Next to the scripts: `.pbkey_state.json`, `.pbkey_token`, `pbsee.json`, `portabotty.json` (web token, relay).
 
 ## Recovery
-- "UUID already registered": `sudo pkill -f "[p]bkey\.py"; sudo systemctl restart bluetooth`. Never Ctrl+Z.
+- "UUID already registered": another Key still holds the Bluetooth HID profile. Start-up now stops it (SIGKILL if it hangs), restarts Bluetooth and retries once by itself; by hand: `sudo pkill -9 -f "[p]bkey\.py"; sudo systemctl restart bluetooth`. Never Ctrl+Z.
 - Garbled terminal: `reset`. Camera: `pbs doctor`.

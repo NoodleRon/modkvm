@@ -1544,10 +1544,41 @@ def make_api(app, token, host, port):
     return srv
 
 
+def reap_stale(wait=3.0):
+    """Stop any other running Key (a hung one keeps the Bluetooth HID profile registered). Never touches us or our parents."""
+    mine = set()
+    pid = os.getpid()
+    while pid > 1:                                   # us + sudo/shell parents
+        mine.add(pid)
+        try:
+            with open(f"/proc/{pid}/stat") as f: pid = int(f.read().rsplit(")", 1)[1].split()[1])
+        except (OSError, ValueError, IndexError): break
+    def is_key(p):
+        try:
+            with open(f"/proc/{p}/cmdline", "rb") as f: argv = f.read().split(b"\0")
+        except OSError: return False
+        return os.path.basename(argv[0]).startswith(b"python") and len(argv) > 1 and argv[1].endswith(b"pbkey.py")
+    def others():
+        r = subprocess.run(["pgrep", "-f", r"[p]bkey\.py"], capture_output=True, text=True)
+        return [int(p) for p in r.stdout.split() if int(p) not in mine and is_key(int(p))]
+    pids = others()
+    for p in pids:
+        try: os.kill(p, signal.SIGTERM)
+        except OSError: pass
+    end = time.time() + wait
+    while pids and time.time() < end:
+        time.sleep(0.2); pids = others()
+    for p in pids:
+        try: os.kill(p, signal.SIGKILL)
+        except OSError: pass
+    if pids: time.sleep(0.5)
+    return len(pids)
+
+
 def install_launcher():
     me = os.path.abspath(__file__)
     script = ('#!/bin/sh\n# PBKEY launcher (created by pbkey.py --install). Works in any shell, local or SSH.\n'
-              f'sudo pkill -f "[p]bkey\\.py" 2>/dev/null; sleep 1\nexec sudo python3 "{me}" "$@"\n')
+              f'sudo pkill -f "python.* [p]bkey\\.py" 2>/dev/null; sleep 1; sudo pkill -9 -f "python.* [p]bkey\\.py" 2>/dev/null\nexec sudo python3 "{me}" "$@"\n')
     try:
         for name in ("pb", "pbk", "pbkb"):
             with open(f"/usr/local/bin/{name}", "w") as f: f.write(script)
@@ -1564,6 +1595,7 @@ def main():
         return pad_diagnose()
     dbus.mainloop.glib.DBusGMainLoop(set_as_default=True)
     dbus.mainloop.glib.threads_init()
+    reap_stale()
     bus = dbus.SystemBus()
     name = load_state().get("name") or f"Portabotty {socket.gethostname()}"
 
@@ -1584,10 +1616,22 @@ def main():
 
     pm = dbus.Interface(bus.get_object("org.bluez", "/org/bluez"), "org.bluez.ProfileManager1")
     prof = Profile(bus, "/pbkey/hid")
-    pm.RegisterProfile("/pbkey/hid", HID_UUID, {
-        "Name": "Portabotty Keyboard", "Role": "server",
-        "RequireAuthentication": dbus.Boolean(False), "RequireAuthorization": dbus.Boolean(False),
-        "ServiceRecord": SDP_RECORD})
+    try:
+        pm.RegisterProfile("/pbkey/hid", HID_UUID, {
+            "Name": "Portabotty Keyboard", "Role": "server",
+            "RequireAuthentication": dbus.Boolean(False), "RequireAuthorization": dbus.Boolean(False),
+            "ServiceRecord": SDP_RECORD})
+    except dbus.exceptions.DBusException as e:
+        if "already registered" in str(e) and not os.environ.get("PBKEY_RETRIED"):
+            # something still holds the HID profile: stop it, restart Bluetooth, start over once
+            reap_stale()
+            try: subprocess.run(["systemctl", "restart", "bluetooth"], timeout=30, capture_output=True)
+            except Exception: pass
+            time.sleep(2)
+            os.environ["PBKEY_RETRIED"] = "1"
+            os.execv(sys.executable, [sys.executable] + sys.argv)
+        sys.exit(f"Bluetooth won't take the HID profile ({e}). Try: sudo systemctl restart bluetooth")
+    os.environ.pop("PBKEY_RETRIED", None)
 
     app = App(bus)
     app.server_name = name
