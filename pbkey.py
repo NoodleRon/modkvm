@@ -655,6 +655,7 @@ class App:
         self.ssh = is_ssh()
         self.pads_auto = MOUSE and "--no-pad" not in sys.argv and (not self.ssh or "--pad" in sys.argv)
         self.pad_state = None
+        self.mouse_note = None                 # last mouse status line printed (prints only on change)
         self.web_url = ""                      # set by main() when the web console is up
         self.see_proc = None                   # PBSEE child started with the c hotkey
         self.see_last = None
@@ -886,14 +887,20 @@ class App:
             return min(max(x / xp, 0.0), 1.0), min(max(y / yp, 0.0), 1.0)
         return (min(max((x - 1) / max(cols - 1, 1), 0.0), 1.0), min(max((y - 1) / max(rows - 1, 1), 0.0), 1.0))
 
+    def mnote(self, msg):
+        if msg != getattr(self, "mouse_note", None):
+            self.mouse_note = msg; say(msg)
+
     def send_mouse(self, dx, dy, wheel, buttons):
         a = self.active
         if not a: return False
         while True:
             sx, sy, sw = (max(-127, min(127, v)) for v in (dx, dy, wheel))
-            if not self.hid.mouse(a, buttons, sx, sy, sw): return False
+            if not self.hid.mouse(a, buttons, sx, sy, sw):
+                self.mnote("mouse: not sent (device not connected)"); return False
             dx -= sx; dy -= sy; wheel -= sw
-            if not (dx or dy or wheel): return True
+            if not (dx or dy or wheel):
+                self.mnote("mouse: sending"); return True
 
     # ---------- misc ----------
     def ask_target(self, verb, fd):
@@ -1172,6 +1179,7 @@ class App:
                 break
             if kind == "mouse":
                 _, cb, x, y, pressed = ev
+                if self.mouse_note is None: self.mnote("mouse: terminal events arriving")
                 if cb & 64:                                      # wheel: 64 = up, 65 = down
                     wheel += 1 if (cb & 3) == 0 else -1
                     continue
