@@ -43,7 +43,7 @@ pb
 Update: `cd ~/portabotty && git pull`.
 
 ## PBKEY
-Typing goes straight to the active device. The top line stays pinned: `Portabotty 0.0.00001: Ctrl+] for menu, then press [key]`, with the clickable `Web: <link>` and `API: <url> | Token file: <path>` pinned under it (the Web row also says `hosted locally | [u] get paid hosting (coming soon)`, or `hosted ● <relay> | [u] change` when a relay is set). The status lines show each key next to its indicator (`name [n]`, `cam [c] ● live`, `keyboard [k] ON`, `solo [s] ON`, `mouse [m] map [a]`, `trackpad [t]`). The screen is never cleared. The status block prints once at start; `Ctrl+]` then a key only logs what changed (`Solo ON`, `Mouse off`, ...), and `Ctrl+]` then Enter prints the status block again. `Ctrl+]` then:
+Typing goes straight to the active device. `pb` prints, right under the command and in this order: the title line (`Portabotty 0.0.00001: Ctrl+] for menu, then press [key]`), the clickable `Web: <link>` (with `hosted locally | [u] get paid hosting (coming soon)`, or `hosted ● <relay> | [u] change` when a relay is set), `API: <url> | Token file: <path>`, the device list, the menu keys (each key next to its indicator: `name [n]`, `cam [c] ● live`, `keyboard [k] on`, `solo [s] on`, `mouse [m] map [a]`, `trackpad [t]`), then a running log. Nothing is pinned or cleared; the terminal scrolls like any program. `Ctrl+]` then a key only logs what changed (`Solo ON`, `Mouse off`, ...); `Ctrl+]` then Enter prints it all again. `Ctrl+]` then:
 
 | key | does |
 |---|---|
@@ -56,7 +56,7 @@ Typing goes straight to the active device. The top line stays pinned: `Portabott
 | `h` | calibrate: homes the pointer, sends it to a known spot, looks where it really landed (camera linked to the device and its view marked in the web console) and fixes the map scale for that device; saved. It also straightens a crooked view (sets the view's tilt from the pointer's path). No camera: just re-homes |
 | `+` `-` | map size ±10 % by hand (not listed on screen) |
 | `c` | camera (PBSEE) on / off; **on by default** (`◐ on, idle` = running, nobody watching), the last choice is remembered |
-| `n` | rename the emulated device (the Bluetooth name phones see): type, Enter saves, Esc cancels |
+| `n` | rename the emulated device (the Bluetooth name phones see; default `BTE Keyboard`): type, Enter saves, Esc cancels |
 | `d` / `f` | drop / forget (y) |
 | `u` | hosting through a relay: URL + agent token, empty URL = back to local (`● host` connected, `○ host` unreachable) |
 | `r` / `q` | restart (restarts the Bluetooth service, re-runs Key, reconnects the active device) / quit |
@@ -76,7 +76,7 @@ Typing goes straight to the active device. The top line stays pinned: `Portabott
 Cameras are data: `pbsee.json`, one entry per camera (`match`: `usb:VID:PID` / `name:` / `serial:` / `path:`; `size`, `fps`, `controls`, `opts`); `pbs probe` writes it. Localhost-only by default; beyond that a token is required.
 
 ## Web console
-Served by PBKEY on port 8800, on the local network by default. The link carries a short token (6 lowercase characters, easy to type on a phone; generated once, kept in `portabotty.json`, typing it in capitals works too). Wrong guesses are rate limited (8 per minute per address). `--web-listen 127.0.0.1` keeps it local; `--no-web` turns it off. The link is pinned under the title (clickable in terminals that support links), or says why it's off. `pbk --qr` also prints a QR code to scan with a phone. Not reachable from another computer: `sudo ufw allow 8800/tcp` (Key prints this when ufw blocks it) and use the printed link including `?t=` (without the token: 401).
+Served by PBKEY on port 8800, on the local network by default. The link carries a short token (6 lowercase characters, easy to type on a phone; generated once, kept in `portabotty.json`, typing it in capitals works too). Wrong guesses are rate limited (8 per minute per address). `--web-listen 127.0.0.1` keeps it local; `--no-web` turns it off. The link is printed under the title (clickable in terminals that support links), or says why it's off. `pbk --qr` also prints a QR code to scan with a phone. Not reachable from another computer: `sudo ufw allow 8800/tcp` (Key prints this when ufw blocks it) and use the printed link including `?t=` (without the token: 401).
 
 Live image, device chips (tap to switch; a chip shows its linked view), key / see pills (green up, amber idle, red stopped). Works with either part down.
 - **◎ direct** (default on desktop): the image maps to the device screen: tap = click there, drag = swipe, long-press / two-finger tap = right click, wheel / two-finger drag = scroll. **▭ pad** (default on touch screens): the image is a relative trackpad. The button switches; the choice is remembered per browser.

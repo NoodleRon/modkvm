@@ -4,7 +4,7 @@
 Everything you type is transmitted live to the active phone (nothing is buffered or echoed).
 Ctrl+]  opens the menu: 1-9 switch | p pair | s solo | m mouse (terminal) | t trackpad (server) | a map/relative |
         h re-home pointer | + - map size | d drop | f forget | q quit
-Mouse (terminal window + server trackpad) is ON by default when detected.
+Mouse (terminal window + server trackpad) is on by default when detected.
 Also serves a local HTTP API (127.0.0.1:8809, token file next to this script) and, with portabotty.py alongside, the web
 console + MCP (http://localhost:8800). See (webcam) shows as an indicator line; c starts/stops it, w prints the web link.
 Flags: --no-mouse (keyboard-only descriptor; re-pair after changing) | --no-pad | --no-term-mouse | --no-api | --no-web
@@ -424,7 +424,6 @@ def tty_raw(fd):
     _TTY["fd"], _TTY["old"] = fd, old
 
 def tty_restore():
-    header_off()
     if _MOUSE_REPORTING["on"]:
         raw_out(MOUSE_OFF_SEQ); _MOUSE_REPORTING["on"] = False
     if _TTY["old"] is not None:
@@ -441,88 +440,13 @@ def raw_out(s):
 def say(msg="", end="\n"):
     print(msg, end=end, flush=True)
 
-_HDR = {"on": False, "redraw": False, "web": None, "api": None, "host": None, "n": 1}
-
-
 def hyperlink(url, text=None):
     """Clickable link (OSC 8); terminals without support just show the text."""
     return f"\x1b]8;;{url}\x1b\\{text or url}\x1b]8;;\x1b\\"
 
 
-def header_text(cols):
-    text = f"Portabotty {VERSION}: Ctrl+] for menu, then press [key]"
-    return text if len(text) <= cols else text[:cols - 1] + "…"
-
-
-def header_lines(cols):
-    """[(visible text, text to print)] for each pinned row: the title, then the web link."""
-    t = header_text(cols)
-    out = [(t, f"\x1b[7m{t.ljust(cols)}\x1b[0m")]
-    web = _HDR["web"]() if _HDR["web"] else None
-    if web:
-        link, tail = web
-        host = _HDR["host"]() if _HDR["host"] else None
-        if host: tail += f" | {host}"
-        room = cols - len("Web: ")
-        if len(link) > room:
-            link, tail = "", (link + tail)
-        tail = tail if len(link) + len(tail) <= room else tail[:max(0, room - len(link) - 1)] + "…"
-        vis = f"Web: {link}{tail}"
-        out.append((vis, f"Web: {hyperlink(link) if link else ''}{tail}"))
-    api = _HDR["api"]() if _HDR["api"] else None
-    if api:
-        api = api if len(api) <= cols else api[:cols - 1] + "…"
-        out.append((api, api))
-    return out
-
-
-def header_draw(cols, rows):
-    """Pinned top lines; everything else scrolls underneath them."""
-    lines = header_lines(cols)
-    _HDR["n"] = len(lines)
-    raw_out("\x1b7" + "".join(f"\x1b[{i};1H\x1b[2K{ren}" for i, (vis, ren) in enumerate(lines, 1))
-            + f"\x1b[{len(lines) + 1};{rows}r\x1b8")
-
-
-def cursor_row(fd, timeout=0.3):
-    """Ask the terminal where the cursor is (1-based row), or None."""
-    try:
-        old = termios.tcgetattr(fd)
-        raw = termios.tcgetattr(fd)
-        raw[3] &= ~(termios.ECHO | termios.ICANON)
-        termios.tcsetattr(fd, termios.TCSADRAIN, raw)
-    except Exception:
-        return None
-    try:
-        raw_out("\x1b[6n")
-        buf, end = b"", time.time() + timeout
-        while time.time() < end and not buf.endswith(b"R"):
-            if select.select([fd], [], [], max(0, end - time.time()))[0]:
-                buf += os.read(fd, 32)
-        m = re.search(rb"\x1b\[(\d+);\d+R", buf)
-        return int(m.group(1)) if m else None
-    except Exception:
-        return None
-    finally:
-        try: termios.tcsetattr(fd, termios.TCSADRAIN, old)
-        except Exception: pass
-
-
-def header_on(cols, rows, row=None):
-    """Pin the top lines without wiping the screen: push lines into scrollback, open rows 1..n."""
-    _HDR["on"] = True
-    n = len(header_lines(cols))
-    raw_out(f"\x1b[{rows};1H" + "\n" * n + "\x1b[1;1H" + "\x1b[L" * n)
-    header_draw(cols, rows)
-    raw_out(f"\x1b[{max(n + 1, row or n + 1)};1H")
-
-
-def header_off():
-    if _HDR["on"]:
-        _HDR["on"] = False
-        n = _HDR["n"]
-        # leave no stale title/links behind: blank the pinned rows, then park the cursor at the bottom
-        raw_out("\x1b[r" + "".join(f"\x1b[{i};1H\x1b[2K" for i in range(1, n + 1)) + "\x1b[999;1H\n")
+def hyperlink_text(link, tail=""):
+    return f"{hyperlink(link)}{tail}" if link else tail
 
 
 atexit.register(tty_restore)
@@ -752,7 +676,7 @@ class App:
         self.web_link = ""                     # the bare link inside it
         self.see_proc = None                   # PBSEE child started by Key (on by default, remembered)
         self.want_see = bool(st.get("see", True))
-        self.server_name = st.get("name") or f"Portabotty {socket.gethostname()}"
+        self.server_name = st.get("name") or DEFAULT_NAME
         self.see_last = None
         self.last_see_check = 0.0
         self.last_scan = 0.0
@@ -779,8 +703,19 @@ class App:
         if b["link"]: return "◐ linked (no HID)"
         return "○ offline"
 
+    def top_lines(self):
+        out = [f"Portabotty {VERSION}: Ctrl+] for menu, then press [key]"]
+        web = self.web_header()
+        if web:
+            link, tail = web
+            host = self.hosting_label()
+            out.append(f"Web: {hyperlink_text(link, tail)}" + (f" | {host}" if host else ""))
+        if self.api_info: out.append(self.api_info)
+        return out
+
     def show(self):
         bl = bonds(self.bus)
+        for line in self.top_lines(): say(line)
         if not bl:
             say("No bonds.")
             return bl
@@ -788,12 +723,16 @@ class App:
         for i, b in enumerate(bl, 1):
             mark = "*" if b["addr"] == self.active else " "
             say(f"{mark} {i:<5}{b['name'][:24]:<26}{b['addr']:<19}{self.status(b)}")
-        ptr = (f"  mouse [m] {(('map' if self.term_map else 'relative') + ' [a]') if self.mouse_term else 'off'}"
-               f" | trackpad [t] {'ON' if self.pads else 'off'} | calibrate [h]") if MOUSE else "  no mouse"
-        say(f"\n  name [n] {self.server_name} | cam [c] {SEE_DOT[self.see_now()]}"
-            f" | keyboard [k] {'ON' if self.kbd else 'OFF'} | solo [s] {'ON' if self.solo else 'OFF'}")
-        say(ptr)
-        say("  pair [p] | drop [d] | forget [f] | restart [r] | quit [q]\n")
+        onoff = lambda v: "on" if v else "off"
+        say(f"\n  cam [c] {SEE_DOT[self.see_now()]}" + (" | calibrate [h]" if MOUSE else ""))
+        say(f"\n  name [n] {self.server_name} | keyboard [k] {onoff(self.kbd)} | solo [s] {onoff(self.solo)}")
+        if MOUSE:
+            say(f"  mouse [m] {(('map' if self.term_map else 'relative') + ' [a]') if self.mouse_term else 'off'}"
+                f" | trackpad [t] {onoff(self.pads)}")
+        else:
+            say("  no mouse")
+        say("  pair [p] | drop [d] | forget [f]")
+        say("\n  restart [r] | quit [q]\n")
         return bl
 
     def banner(self):
@@ -914,11 +853,11 @@ class App:
 
     def toggle_keyboard(self):
         self.kbd = not self.kbd; save_state(keyboard=self.kbd)
-        say("Keyboard ON" if self.kbd else "Keyboard OFF")
+        say("Keyboard on" if self.kbd else "Keyboard off")
 
     def toggle_solo(self):
         self.solo = not self.solo; save_state(solo=self.solo)
-        say("Solo ON" if self.solo else "Solo OFF")
+        say("Solo on" if self.solo else "Solo off")
 
     # ---------- mouse ----------
     def set_term_mouse(self, on, quiet=False):
@@ -931,7 +870,7 @@ class App:
             _MOUSE_REPORTING["on"] = True
             raw_out(PROBE_1016 + "\x1b[?1003h\x1b[?1006h")     # ask about pixel mode, enable any-motion + SGR
             if not quiet:
-                say("Mouse ON")
+                say("Mouse on")
         else:
             raw_out(MOUSE_OFF_SEQ); _MOUSE_REPORTING["on"] = False
             if self.mbtn:
@@ -962,7 +901,7 @@ class App:
             self.pad_note(f"trackpad: {e}", loud); return bool(self.pads)
         self.pads += new
         if new:
-            self.pad_note("Trackpad ON", True)
+            self.pad_note("Trackpad on", True)
         elif not self.pads:
             self.pad_note("trackpad: none found", loud)
         return bool(self.pads)
@@ -1134,7 +1073,7 @@ class App:
 
     def term_fraction(self, x, y):
         cols, rows, xp, yp = self.term_size()
-        top = 1 if _HDR["on"] else 0                      # the pinned header row is not part of the map
+        top = 0
         if self.mscale == (1, 1) and xp > 0 and yp > 0:
             rh = yp / max(rows, 1) * top
             return min(max(x / xp, 0.0), 1.0), min(max((y - rh) / max(yp - rh, 1), 0.0), 1.0)
@@ -1238,7 +1177,7 @@ class App:
             cmd = ["sudo", "-u", os.environ["SUDO_USER"]] + cmd       # the camera needs the video group, not root
         self.see_proc = subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
                                          stderr=subprocess.DEVNULL, start_new_session=True)
-        quiet or say("See starting")
+        quiet or say("Cam starting")
         return True
 
     def stop_see(self, quiet=False):
@@ -1247,7 +1186,7 @@ class App:
             try: self.see_proc.wait(3)
             except Exception: pass
         self.see_proc = None
-        quiet or say("See off")
+        quiet or say("Cam off")
 
     def set_see(self, on, quiet=True):
         """Remembered across runs (default on). Returns the new wanted state."""
@@ -1255,7 +1194,7 @@ class App:
         if self.want_see: self.start_see(quiet)
         else:
             if web and web.port_open(web.SB_URL) and not self.see_running():
-                quiet or say("See is running in another terminal")
+                quiet or say("Cam is running in another terminal")
             self.stop_see(quiet)
         return self.want_see
 
@@ -1550,9 +1489,6 @@ class App:
         fd = sys.stdin.fileno()
         time.sleep(0.5)
         cols, rows = self.term_size()[:2]
-        _HDR["web"] = self.web_header; _HDR["api"] = lambda: self.api_info; _HDR["host"] = self.hosting_label
-        self.host_last = None
-        header_on(cols, rows, cursor_row(fd))
         bl = self.show()
         if "--qr" in sys.argv: self.show_web()
         if bl and self.active not in [b["addr"] for b in bl]:
@@ -1568,21 +1504,18 @@ class App:
                     has, typed = self.term_has_mouse(fd)
                     if has:
                         self.set_term_mouse(True, quiet=True)
-                        say("Mouse ON")
+                        say("Mouse on")
                     if typed: self.handle(fd, typed)                  # keys typed while we were asking
                 if self.pads_auto: self.scan_pads()
             while not self.stop.is_set():
                 data = self.read(fd)
                 if data is None: break
                 if data: self.handle(fd, data)
-                if _HDR["redraw"]:
-                    _HDR["redraw"] = False; header_draw(*self.term_size()[:2])
                 if self.pads_auto and time.time() - self.last_scan > PAD_RESCAN:
                     self.last_scan = time.time(); self.scan_pads()
                 if time.time() - self.last_see_check > 2:
                     self.last_see_check = time.time(); self.check_see()
-                    ht = self.hosting_text()
-                    if ht != self.host_last: self.host_last = ht; _HDR["redraw"] = True
+
         except Exception as e:
             say(f"console error: {e}")
         finally:
@@ -1706,9 +1639,12 @@ def frame_size(jpeg):
         return None
 
 
-def server_name_for(saved, host):
-    """The Bluetooth name phones see: whatever you set, else Portabotty <host>. A saved name is never changed."""
-    return saved or f"Portabotty {host}"
+DEFAULT_NAME = "BTE Keyboard"
+
+
+def server_name_for(saved, host=None):
+    """The Bluetooth name phones see: whatever you set, else BTE Keyboard. A saved name is never changed."""
+    return saved or DEFAULT_NAME
 
 
 def reap_stale(wait=3.0):
@@ -1835,7 +1771,6 @@ def main():
     loop = GLib.MainLoop()
     for sig in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
         signal.signal(sig, lambda *a: app.stop.set())
-    signal.signal(signal.SIGWINCH, lambda *a: _HDR.__setitem__("redraw", True))
     GLib.timeout_add(200, lambda: (loop.quit(), False)[1] if app.stop.is_set() else True)
     target = app.console if sys.stdin.isatty() else app.headless
     threading.Thread(target=target, daemon=True).start()
