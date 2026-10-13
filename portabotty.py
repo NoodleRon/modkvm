@@ -351,9 +351,6 @@ function devRow(d){
   r.innerHTML='<div class=main><i class="dot '+(d.connected?'up':'off')+'"></i><span class=nm><b>'+esc(d.name)+'</b><small>'+(c?esc(c):(d.active?'active':d.connected?'connected':'offline'))+'</small></span><button class=chev aria-label=more>'+IC.chev+'</button></div><span class="port'+(c?' linked':'')+'" data-k=d data-id="'+esc(d.addr)+'"></span>';
   const m=document.createElement('div');m.className='more';
   const st=hub.status||{};
-  const ni=document.createElement('input');ni.type='text';ni.value=d.name;ni.maxLength=60;ni.setAttribute('aria-label','name');
-  const nb=btn('Save',()=>send('rename',{device:d.n,name:ni.value.trim()}).then(()=>{sig='';poll()}));
-  const nw=document.createElement('div');nw.style.cssText='display:flex;gap:6px;flex:1;min-width:140px';nw.append(ni,nb);m.append(setRow('Name',nw));
   m.append(setRow('Solo',sw(!!st.solo,v=>send('solo',{on:v}).then(poll))));
   if(st.mouse_enabled!==false)m.append(setRow('Server trackpad',sw(!!st.trackpad,v=>send('mouse',{trackpad:v}).then(poll))));
   const b=document.createElement('div');b.className='btns';

@@ -451,9 +451,36 @@ def header_draw(cols, rows):
     raw_out(f"\x1b7\x1b[1;1H\x1b[2K\x1b[7m{header_text(cols).ljust(cols)[:cols]}\x1b[0m\x1b[2;{rows}r\x1b8")
 
 
-def header_on(cols, rows):
+def cursor_row(fd, timeout=0.3):
+    """Ask the terminal where the cursor is (1-based row), or None."""
+    try:
+        old = termios.tcgetattr(fd)
+        raw = termios.tcgetattr(fd)
+        raw[3] &= ~(termios.ECHO | termios.ICANON)
+        termios.tcsetattr(fd, termios.TCSADRAIN, raw)
+    except Exception:
+        return None
+    try:
+        raw_out("\x1b[6n")
+        buf, end = b"", time.time() + timeout
+        while time.time() < end and not buf.endswith(b"R"):
+            if select.select([fd], [], [], max(0, end - time.time()))[0]:
+                buf += os.read(fd, 32)
+        m = re.search(rb"\x1b\[(\d+);\d+R", buf)
+        return int(m.group(1)) if m else None
+    except Exception:
+        return None
+    finally:
+        try: termios.tcsetattr(fd, termios.TCSADRAIN, old)
+        except Exception: pass
+
+
+def header_on(cols, rows, row=None):
+    """Pin the top line without wiping the screen: push one line into scrollback, open row 1."""
     _HDR["on"] = True
-    raw_out("\x1b[2J\x1b[H"); header_draw(cols, rows); raw_out("\x1b[2;1H")
+    raw_out(f"\x1b[{rows};1H\n\x1b[1;1H\x1b[L")
+    header_draw(cols, rows)
+    raw_out(f"\x1b[{max(2, row or 2)};1H")
 
 
 def header_off():
@@ -498,10 +525,7 @@ def bonds(bus):
             out.append({"path": str(path), "addr": addr,
                         "name": str(d.get("Name", d.get("Alias", addr))),
                         "link": bool(d.get("Connected", False))})
-    out.sort(key=lambda b: (b["name"].lower(), b["addr"]))       # numbering follows the real name, not a nickname
-    nick = load_state().get("nicknames", {})
-    for b in out:
-        if nick.get(b["addr"]): b["name"] = nick[b["addr"]]
+    out.sort(key=lambda b: (b["name"].lower(), b["addr"]))
     return out
 
 def set_prop(bus, name, val):
@@ -699,6 +723,8 @@ class App:
         self.term_map = st.get("term_map", True)      # terminal window <-> phone screen (absolute-feel)
         self.map_gain = float(st.get("map_gain", 1.0))
         self.vpos = None                       # where we believe the phone's pointer is (counts); None = unknown
+        self.restart = False
+        self.kbd = bool(st.get("keyboard", True))
         self.api_lock = threading.RLock()
         self.hid = HID(self.on_change)
 
@@ -717,6 +743,7 @@ class App:
 
     def show(self):
         bl = bonds(self.bus)
+        if self.web_url: say(f"\n  {self.web_text()}")
         if not bl:
             say("No bonds.")
             return bl
@@ -724,11 +751,12 @@ class App:
         for i, b in enumerate(bl, 1):
             mark = "*" if b["addr"] == self.active else " "
             say(f"{mark} {i:<5}{b['name'][:24]:<26}{b['addr']:<19}{self.status(b)}")
-        ptr = (f" | mouse [m] {(('map' if self.term_map else 'relative') + ' [a]') if self.mouse_term else 'off'}"
-               f" | trackpad [t] {'ON' if self.pads else 'off'} | home [h] | size [+/-]") if MOUSE else " | keyboard-only"
-        say(f"\n  solo [s] {'ON' if self.solo else 'OFF'}{ptr}")
-        say(f"  see [c] {SEE_DOT[self.see_now()]}" + (f" | web [w] {self.web_text()}" if self.web_url else ""))
-        say(f"  name [n] {self.server_name} | rename [r] | pair [p] | drop [d] | forget [f] | quit [q]\n")
+        ptr = (f"  mouse [m] {(('map' if self.term_map else 'relative') + ' [a]') if self.mouse_term else 'off'}"
+               f" | trackpad [t] {'ON' if self.pads else 'off'} | home [h] | size [+/-]") if MOUSE else "  no mouse"
+        say(f"\n  name [n] {self.server_name} | cam [c] {SEE_DOT[self.see_now()]}"
+            f" | keyboard [k] {'ON' if self.kbd else 'OFF'} | solo [s] {'ON' if self.solo else 'OFF'}")
+        say(ptr)
+        say("  pair [p] | drop [d] | forget [f] | restart [x] | quit [q]\n")
         return bl
 
     def banner(self):
@@ -776,26 +804,11 @@ class App:
         self.server_name = name; save_state(name=name)
         return name
 
-    def set_nickname(self, addr, name):
-        nick = dict(load_state().get("nicknames", {}))
-        name = " ".join(str(name).split())[:60]
-        if name: nick[addr] = name
-        else: nick.pop(addr, None)                                        # empty = back to its own name
-        save_state(nicknames=nick)
-        return name
-
     def rename_server(self, fd):
-        name = self.read_line(fd, "Server name: ", self.server_name)
+        name = self.read_line(fd, "Name: ", self.server_name)
         if not name: say("Cancelled."); return
-        try: say(f"Server name: {self.set_server_name(name)}")
+        try: say(f"Renamed: {self.set_server_name(name)}")
         except Exception as e: say(f"error: {e}")
-
-    def rename_device(self, fd):
-        b = self.ask_target("Rename", fd)
-        if not b: return
-        name = self.read_line(fd, f"Name for {b['name']}: ", b["name"])
-        if name is None: say("Cancelled."); return
-        say(f"Renamed: {self.set_nickname(b['addr'], name) or 'reset'}")
 
     def pick(self, arg):
         bl = bonds(self.bus)
@@ -859,6 +872,10 @@ class App:
         set_prop(self.bus, "DiscoverableTimeout", dbus.UInt32(120))
         set_prop(self.bus, "Discoverable", dbus.Boolean(True))
         say("Visible 120s.")
+
+    def toggle_keyboard(self):
+        self.kbd = not self.kbd; save_state(keyboard=self.kbd)
+        say("Keyboard ON" if self.kbd else "Keyboard OFF")
 
     def toggle_solo(self):
         self.solo = not self.solo; save_state(solo=self.solo)
@@ -1059,13 +1076,13 @@ class App:
     def toggle_see(self):
         self.set_see(not (self.want_see and (self.see_running() or (web and web.port_open(web.SB_URL)))), quiet=False)
 
-    def shutdown(self):
+    def shutdown(self, bye="Disconnected from all devices. Bye."):
         self.stop_see(quiet=True)
         self.set_term_mouse(False, quiet=True)
         self.stop_pads()
         for addr in list(self.hid.conns):
             self.hid.drop(addr); self.bt_disconnect(addr)
-        say("Disconnected from all devices. Bye.")
+        say(bye)
         self.stop.set()
 
     def ensure_target(self):
@@ -1165,11 +1182,8 @@ class App:
             self.drop(self.find_bond(body.get("device", self.active)))
             return self.snapshot()
         if path == "/rename":
-            if "server" in body:
-                try: return {"server": self.set_server_name(body["server"])}
-                except ValueError as e: raise ApiError(str(e))
-            b = self.find_bond(body["device"])
-            return {"device": b["addr"], "name": self.set_nickname(b["addr"], body.get("name", "")) or None}
+            try: return {"server": self.set_server_name(body.get("server", ""))}
+            except ValueError as e: raise ApiError(str(e))
         if path == "/solo":
             if bool(body["on"]) != self.solo: self.toggle_solo()
             return self.snapshot()
@@ -1239,9 +1253,10 @@ class App:
         return None
 
     def menu(self, fd):
-        self.show()
         k = self.getkey(fd)
         if k is None: return
+        if k in ("\r", "\n", " ", "?"):
+            self.show(); return
         if k.isdigit() and k != "0":
             b = self.pick(k)
             if b: self.use(b)
@@ -1264,14 +1279,15 @@ class App:
             say(f"Map x{self.map_gain:.2f}")
         elif k == "c": self.toggle_see()
         elif k == "n": self.rename_server(fd)
-        elif k == "r": self.rename_device(fd)
-        elif k == "w": self.show_web()
+        elif k == "k": self.toggle_keyboard()
         elif k == "d":
             b = self.ask_target("Drop", fd)
             if b: self.drop(b)
         elif k == "f":
             b = self.ask_target("Forget", fd)
             if b: self.forget(b, fd)
+        elif k == "x":
+            self.restart = True; self.shutdown(bye="Restarting."); return
         elif k == "q":
             self.shutdown(); return
         self.banner()
@@ -1297,6 +1313,8 @@ class App:
             if kind == "mode":                                   # terminal says it can report pixels
                 if ev[1] == 1016 and ev[2] in (1, 2, 3) and self.mouse_term and self.term_size()[2] > 0:
                     self.mscale = (1, 1); raw_out("\x1b[?1016h")
+                continue
+            if kind != "mouse" and not self.kbd:                 # keyboard off: keys stay local, mouse still works
                 continue
             if not self.ensure_target():
                 if not sep: termios.tcflush(fd, termios.TCIFLUSH)
@@ -1345,8 +1363,9 @@ class App:
         fd = sys.stdin.fileno()
         time.sleep(0.5)
         cols, rows = self.term_size()[:2]
-        header_on(cols, rows)
+        header_on(cols, rows, cursor_row(fd))
         bl = self.show()
+        if "--qr" in sys.argv: self.show_web()
         if bl and self.active not in [b["addr"] for b in bl]:
             self.set_active(bl[0]["addr"])
         tty_raw(fd)
@@ -1551,6 +1570,8 @@ def main():
         except Exception: pass
         try: agent_manager.UnregisterAgent("/pbkey/agent")
         except Exception: pass
+        if app.restart:
+            os.execv(sys.executable, [sys.executable] + sys.argv)
 
 if __name__ == "__main__":
     main()
