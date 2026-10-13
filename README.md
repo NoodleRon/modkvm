@@ -61,13 +61,13 @@ Typing goes straight to the active device. `Ctrl+]` then:
 | `+` `-` | map size ±10 % |
 | `d` / `f` / `q` | drop / forget (y) / quit |
 
-- **Mouse** is on by default when available. Trackpad or USB mouse: captured automatically, relative, lift-and-continue; tap = click, two-finger tap = right click, two-finger drag = scroll; `Ctrl+]` `t` releases it. Terminal mouse: auto-on where supported (not the bare Linux console); disables text selection there.
+- **Mouse** is on by default when available. Trackpad or USB mouse: captured automatically, relative, lift-and-continue; tap = click, two-finger tap = right click, two-finger drag = scroll; `Ctrl+]` `t` releases it. Terminal mouse: auto-on when the terminal reports the mouse (not the Linux console); disables text selection there.
 - **Map** estimates position (HID is relative, targets accelerate); edges self-correct. Calibrate once: `Ctrl+]` `h`, move to the window's bottom-right; pointer short of the corner → `+`, past → `-`.
 - Flags: `--no-pad`, `--no-term-mouse`, `--no-mouse` (keyboard-only; re-pair), `--no-api`, `--api-port`, `--api-listen`.
 - **Targets:** iPhone, iPad, Mac, Windows, Linux, Android. iPhone needs AssistiveTouch (Settings > Accessibility > Touch) for a pointer. Cmd = GUI/Win key. Keys are sent as a US layout. iOS caches the HID descriptor: after `--no-mouse`, forget the bond on both sides and re-pair.
 
 ## PBSEE
-`pbs` serves the camera and shows `● live` / `◐ idle` / `○ stopped` (cameras run only while watched, stop after 10 s). In kitty, Ghostty, WezTerm, iTerm2 it draws a latest picture (~1/s, 480 px); `p` toggles, `q` quits. `pbs list | snap NAME -o shot.jpg | doctor | probe | install-service`.
+`pbs` serves the camera and shows `● live` / `◐ idle` / `○ stopped` (cameras run only while watched, stop after 10 s). Works in any terminal; where it supports inline images (kitty graphics or iTerm2 protocol) it also draws a latest picture (~1/s, 480 px), `p` toggles; `q` quits. `pbs list | snap NAME -o shot.jpg | doctor | probe | install-service`.
 
 **Calibrate first** (`http://localhost:8800/view`): Calibrate screen → click the 4 corners (TL, TR, BR, BL) → Save view. Web taps map onto this view.
 
