@@ -406,6 +406,9 @@ def pad_diagnose(seconds=6):
 # ---------------------------------------------------------------- terminal helpers
 _TTY = {"fd": None, "old": None}
 _MOUSE_REPORTING = {"on": False}
+# Terminal queries. A terminal that doesn't know them may print the last letter ("p"): save the cursor, ask, put it back, erase.
+PROBE_1006 = "\x1b7\x1b[?1006$p\x1b8\x1b[K"
+PROBE_1016 = "\x1b7\x1b[?1016$p\x1b8\x1b[K"
 MOUSE_OFF_SEQ = "\x1b[?1016l\x1b[?1003l\x1b[?1006l"
 
 def tty_raw(fd):
@@ -516,7 +519,9 @@ def header_on(cols, rows, row=None):
 def header_off():
     if _HDR["on"]:
         _HDR["on"] = False
-        raw_out("\x1b[r\x1b[999;1H\n")
+        n = _HDR["n"]
+        # leave no stale title/links behind: blank the pinned rows, then park the cursor at the bottom
+        raw_out("\x1b[r" + "".join(f"\x1b[{i};1H\x1b[2K" for i in range(1, n + 1)) + "\x1b[999;1H\n")
 
 
 atexit.register(tty_restore)
@@ -920,7 +925,7 @@ class App:
         if on:
             self.mscale = (CELL_W, CELL_H)
             _MOUSE_REPORTING["on"] = True
-            raw_out("\x1b[?1016$p\x1b[?1003h\x1b[?1006h")     # ask about pixel mode, enable any-motion + SGR
+            raw_out(PROBE_1016 + "\x1b[?1003h\x1b[?1006h")     # ask about pixel mode, enable any-motion + SGR
             if not quiet:
                 say("Mouse ON")
         else:
@@ -975,7 +980,7 @@ class App:
     def term_has_mouse(self, fd):
         """Ask the terminal if it reports the mouse (SGR mode). No answer or 'unsupported' = leave it off.
         Returns (supported, bytes the user typed meanwhile)."""
-        raw_out("\x1b[?1006$p")
+        raw_out(PROBE_1006)
         end, buf = time.time() + 0.4, b""
         pat = rb"\x1b\[\?1006;(\d)\$y"
         while time.time() < end:
@@ -1544,6 +1549,13 @@ def make_api(app, token, host, port):
     return srv
 
 
+def server_name_for(saved, host):
+    """The Bluetooth name phones see. Old brand defaults (Keybridge / Seebridge / Portobotty) become the current one."""
+    if not saved or re.fullmatch(r"(Keybridge|Seebridge|Portobotty)( .*)?", saved, re.I):
+        return f"Portabotty {host}"
+    return saved
+
+
 def reap_stale(wait=3.0):
     """Stop any other running Key (a hung one keeps the Bluetooth HID profile registered). Never touches us or our parents."""
     mine = set()
@@ -1597,7 +1609,8 @@ def main():
     dbus.mainloop.glib.threads_init()
     reap_stale()
     bus = dbus.SystemBus()
-    name = load_state().get("name") or f"Portabotty {socket.gethostname()}"
+    name = server_name_for(load_state().get("name"), socket.gethostname())
+    save_state(name=name)
 
     r = subprocess.run(["btmgmt", "class", "5", str(DEV_SUBCLASS)], capture_output=True, text=True)
     logging.info(f"btmgmt class: {(r.stdout or r.stderr).strip()[:120]}")
