@@ -1550,10 +1550,8 @@ def make_api(app, token, host, port):
 
 
 def server_name_for(saved, host):
-    """The Bluetooth name phones see. Old brand defaults (Keybridge / Seebridge / Portobotty) become the current one."""
-    if not saved or re.fullmatch(r"(Keybridge|Seebridge|Portobotty)( .*)?", saved, re.I):
-        return f"Portabotty {host}"
-    return saved
+    """The Bluetooth name phones see: whatever you set, else Portabotty <host>. A saved name is never changed."""
+    return saved or f"Portabotty {host}"
 
 
 def reap_stale(wait=3.0):
@@ -1610,7 +1608,6 @@ def main():
     reap_stale()
     bus = dbus.SystemBus()
     name = server_name_for(load_state().get("name"), socket.gethostname())
-    save_state(name=name)
 
     r = subprocess.run(["btmgmt", "class", "5", str(DEV_SUBCLASS)], capture_output=True, text=True)
     logging.info(f"btmgmt class: {(r.stdout or r.stderr).strip()[:120]}")
