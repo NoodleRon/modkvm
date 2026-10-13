@@ -13,7 +13,7 @@ KB_PORT, SB_PORT, DB_PORT = 8809, 8808, 8800
 KB_URL = os.environ.get("PBKEY_URL", f"http://127.0.0.1:{KB_PORT}").rstrip("/")
 SB_URL = os.environ.get("PBSEE_URL", f"http://127.0.0.1:{SB_PORT}").rstrip("/")
 CONFIG = os.environ.get("PORTABOTTY_CONFIG", os.path.join(HERE, "portabotty.json"))
-KB_PATHS = {"status", "use", "drop", "solo", "mouse", "type", "key", "goto", "click", "scroll", "drag", "move", "home"}
+KB_PATHS = {"status", "use", "drop", "solo", "rename", "mouse", "type", "key", "goto", "click", "scroll", "drag", "move", "home"}
 SB_GET = {"cams", "status", "stream", "snap"}
 SB_POST = {"calibrate", "save"}
 SEE = {}          # set by PBKEY: {"state": () -> bool, "set": (bool) -> bool}  (camera server on/off)
@@ -153,6 +153,7 @@ svg.i{width:19px;height:19px;stroke:currentColor;fill:none;stroke-width:1.8;stro
 .set{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:6px 10px;padding:8px 0 0;font-size:13.5px;color:var(--dim)}.set>span{white-space:nowrap}
 .set button{height:32px;font-size:13px;min-width:0}.btns{display:flex;gap:6px;flex-wrap:wrap;padding-top:10px}.btns button{height:32px;font-size:13px}
 .seg{display:flex;border:1px solid var(--line);border-radius:9px;overflow:hidden}.seg button{border:0;border-radius:0;height:30px;padding:0 8px;background:none;font-size:12.5px}.seg button.on{background:var(--acc2)}
+input[type=text],#sn{font:inherit;background:var(--raise);color:var(--fg);border:1px solid var(--line);border-radius:8px;height:32px;padding:0 10px;min-width:0;flex:1;-webkit-user-select:text;user-select:text}#srv{padding:0 0 12px;gap:8px;flex-wrap:nowrap;align-items:center}
 input[type=range]{width:100%;max-width:130px;accent-color:var(--acc)}select{font:inherit;background:var(--raise);color:var(--fg);border:1px solid var(--line);border-radius:8px;height:30px}
 .sw{position:relative;width:38px;height:22px;flex:none}.sw input{position:absolute;opacity:0;inset:0;margin:0;cursor:pointer}.sw s{position:absolute;inset:0;border-radius:99px;background:var(--line);transition:background .15s;pointer-events:none}
 .sw s:after{content:"";position:absolute;left:3px;top:3px;width:16px;height:16px;border-radius:50%;background:#fff;transition:transform .15s}.sw input:checked+s{background:var(--acc)}.sw input:checked+s:after{transform:translateX(16px)}
@@ -161,12 +162,13 @@ input[type=range]{width:100%;max-width:130px;accent-color:var(--acc)}select{font
 #lines g{pointer-events:all;cursor:pointer}#lines circle{fill:var(--panel);stroke:var(--acc);stroke-width:1.6}#lines text{fill:var(--acc);font:600 11px system-ui;text-anchor:middle;dominant-baseline:central}
 .empty{color:var(--dim);font-size:13px;padding:6px 2px}
 </style>
-<div id=bar><span class=brand>Portabotty</span><span class=pill id=kbi><i></i>key</span><span class=pill id=sbi><i></i>see</span><div id=dev></div>
+<div id=bar><span class=brand id=brand>Portabotty</span><span class=pill id=kbi><i></i>key</span><span class=pill id=sbi><i></i>see</span><div id=dev></div>
 <button id=mode aria-label=mode></button><button id=kbd aria-label=keyboard></button><button id=tr aria-label=keys></button><button id=lk aria-label=link></button></div>
 <div id=stage><div id=none><span id=nt></span><button id=ns style=display:none>Start camera</button></div><div id=wrap><img id=cam alt=""><i id=ptr></i><div id=pad></div></div><div id=calbar><span id=ct></span><button id=cx>Cancel</button></div></div>
 <div id=dock><div id=dtabs><div class=seg><button id=tabt>Tray</button><button id=tabk>Keys</button><button id=tabp>Pad</button></div><span></span></div>
 <div id=tray></div><div id=board></div><div id=tpd style=display:none><div id=tpad><i id=tdot></i></div><div id=tbtn><button id=tl>Left</button><button id=tm>Middle</button><button id=trr>Right</button></div></div></div><input id=kb autocapitalize=off autocorrect=off autocomplete=off spellcheck=false aria-label=keyboard>
 <div id=sheet><div id=scrim></div><div id=panel><div id=ph><span>Link</span><button id=pc aria-label=close>✕</button></div><div id=pb>
+<div class=set id=srv><span>This server</span><input id=sn maxlength=60 aria-label=name><button id=sv>Save</button></div>
 <div id=cols><svg id=lines></svg><div class="col d"><h4>Devices</h4><div id=ld></div></div><div class="col v"><h4><span>Views</span><label class=sw title=camera><input type=checkbox id=seesw><s></s></label></h4><div id=lv></div></div></div></div></div></div>
 <script>
 const T=new URLSearchParams(location.search).get('t')||'',$=id=>document.getElementById(id);
@@ -195,7 +197,7 @@ function chips(){
 }
 function poll(){
   fetch(U('/hub')).then(r=>r.json()).then(h=>{
-  hub=h;const s=h.status||{};devs=s.devices||[];links=h.links||{};
+  hub=h;const s=h.status||{};devs=s.devices||[];links=h.links||{};if(s.name&&s.name!==$('brand').textContent){$('brand').textContent=s.name;document.title=s.name}
   $('kbi').className='pill'+(h.kb?' up':'');$('sbi').className='pill'+(h.sb?(h.cam==='live'?' up':' idle'):'');
   if(s.pointer&&!cal){$('ptr').style.cssText='display:block;left:'+s.pointer[0]*100+'%;top:'+s.pointer[1]*100+'%'}else $('ptr').style.display='none';
   if(s.active!==lastActive){lastActive=s.active;if(links[s.active]){viewCam=links[s.active];ls.set('view',viewCam)}}
@@ -221,7 +223,7 @@ function placeholder(){
 $('ns').onclick=()=>post('/see',{on:true}).then(()=>setTimeout(poll,800));
 setInterval(poll,1500);poll();
 // ---- modes
-let mode=ls.get('mode')==='pad'?'pad':'direct';
+let mode=(ls.get('mode')||(matchMedia('(pointer:coarse)').matches?'pad':'direct'))==='pad'?'pad':'direct';
 function setMode(m){mode=m;ls.set('mode',m);$('stage').classList.toggle('pad',m==='pad');$('mode').innerHTML=m==='pad'?IC.pad:IC.mode;$('mode').classList.toggle('on',m==='pad')}
 $('mode').onclick=()=>setMode(mode==='pad'?'direct':'pad');setMode(mode);
 // ---- pointer
@@ -335,7 +337,7 @@ function tend(e){if(!TP.delete(e.pointerId)||!tg)return;if(TP.size>0)return;flus
 tpad.addEventListener('pointerup',tend);tpad.addEventListener('pointercancel',e=>{TP.delete(e.pointerId);tg=null});
 $('tl').onclick=()=>send('click',{button:'left'});$('tm').onclick=()=>send('click',{button:'middle'});$('trr').onclick=()=>send('click',{button:'right'});
 // ---- link sheet: devices <-> views, settings inline
-function openSheet(){$('sheet').classList.add('open');$('lk').classList.add('on');sig='';render();setTimeout(draw,30)}
+function openSheet(){$('sn').value=(hub.status||{}).name||'';$('sheet').classList.add('open');$('lk').classList.add('on');sig='';render();setTimeout(draw,30)}
 function closeSheet(){$('sheet').classList.remove('open');$('lk').classList.remove('on');sel=null}
 $('lk').onclick=()=>$('sheet').classList.contains('open')?closeSheet():openSheet();$('pc').onclick=closeSheet;$('scrim').onclick=closeSheet;
 function sw(on,fn){const l=document.createElement('label');l.className='sw';l.innerHTML='<input type=checkbox'+(on?' checked':'')+'><s></s>';l.firstChild.onchange=e=>fn(e.target.checked);return l}
@@ -349,6 +351,9 @@ function devRow(d){
   r.innerHTML='<div class=main><i class="dot '+(d.connected?'up':'off')+'"></i><span class=nm><b>'+esc(d.name)+'</b><small>'+(c?esc(c):(d.active?'active':d.connected?'connected':'offline'))+'</small></span><button class=chev aria-label=more>'+IC.chev+'</button></div><span class="port'+(c?' linked':'')+'" data-k=d data-id="'+esc(d.addr)+'"></span>';
   const m=document.createElement('div');m.className='more';
   const st=hub.status||{};
+  const ni=document.createElement('input');ni.type='text';ni.value=d.name;ni.maxLength=60;ni.setAttribute('aria-label','name');
+  const nb=btn('Save',()=>send('rename',{device:d.n,name:ni.value.trim()}).then(()=>{sig='';poll()}));
+  const nw=document.createElement('div');nw.style.cssText='display:flex;gap:6px;flex:1;min-width:140px';nw.append(ni,nb);m.append(setRow('Name',nw));
   m.append(setRow('Solo',sw(!!st.solo,v=>send('solo',{on:v}).then(poll))));
   if(st.mouse_enabled!==false)m.append(setRow('Server trackpad',sw(!!st.trackpad,v=>send('mouse',{trackpad:v}).then(poll))));
   const b=document.createElement('div');b.className='btns';
@@ -387,6 +392,7 @@ function render(){
   $('seesw').checked=hub.see_on!==false&&(hub.sb||hub.see_on===true);$('seesw').disabled=hub.see_on===undefined||hub.see_on===null;
   draw();
 }
+$('sv').onclick=()=>{const n=$('sn').value.trim();if(n)send('rename',{server:n}).then(()=>poll())};
 $('seesw').onchange=e=>post('/see',{on:e.target.checked}).then(()=>setTimeout(poll,900));
 // rows: tap selects / shows, chevron expands
 $('cols').addEventListener('click',e=>{
@@ -434,14 +440,28 @@ class Gateway:
     token = ""
 
 
+FAILS = {}
+
+
+def guessed(ip):
+    FAILS.setdefault(ip, []).append(time.time())
+
+
+def locked_out(ip, limit=8, window=60):
+    now = time.time(); FAILS[ip] = [t for t in FAILS.get(ip, []) if now - t < window]
+    return len(FAILS[ip]) >= limit
+
+
 class Handler(BaseHTTPRequestHandler):
     server_version = "portabotty"
     def log_message(self, *a): pass
 
-    def _send(self, code, body, ctype="application/json"):
+    def _send(self, code, body, ctype="application/json", extra=()):
         self.send_response(code)
         self.send_header("Content-Type", ctype); self.send_header("Content-Length", str(len(body)))
-        self.send_header("Cache-Control", "no-store"); self.end_headers()
+        self.send_header("Cache-Control", "no-store")
+        for k, v in extra: self.send_header(k, v)
+        self.end_headers()
         self.wfile.write(body)
 
     def _json(self, obj, code=200): self._send(code, json.dumps(obj).encode())
@@ -449,7 +469,10 @@ class Handler(BaseHTTPRequestHandler):
     def _auth(self, q):
         if not Gateway.token: return True
         given = (q.get("t") or [""])[-1] or self.headers.get("Authorization", "").replace("Bearer ", "")
-        return hmac.compare_digest(given, Gateway.token)
+        if Gateway.token == Gateway.token.lower(): given = given.lower()
+        ok = hmac.compare_digest(given, Gateway.token)
+        if given and not ok: guessed(self.client_address[0])
+        return ok
 
     def _body(self):
         return self.rfile.read(min(int(self.headers.get("Content-Length", 0) or 0), 100_000)) or b"{}"
@@ -497,9 +520,11 @@ class Handler(BaseHTTPRequestHandler):
     def _route(self, method):
         u = urllib.parse.urlparse(self.path); q = urllib.parse.parse_qs(u.query)
         parts = [p for p in u.path.split("/") if p]
+        if locked_out(self.client_address[0]): return self._send(429, b"too many wrong tokens, wait a minute", "text/plain")
         if not self._auth(q): return self._send(401, b"token required (?t=...)", "text/plain")
         if method == "GET":
             if not parts: return self._send(200, CONSOLE.encode(), "text/html; charset=utf-8")
+            if parts == ["mcp"]: return self._send(405, b"POST only", "text/plain", (("Allow", "POST"),))
             if parts == ["hub"]: return self._json(hub_status())
             if parts == ["links"]: return self._json({"links": load_cfg().get("links", {})})
             if parts[0] == "kb" and len(parts) == 2 and parts[1] in KB_PATHS:
@@ -529,6 +554,10 @@ class Handler(BaseHTTPRequestHandler):
         save_cfg(cfg)
         self._json({"ok": True, "links": links})
 
+    def do_DELETE(self):                                   # MCP clients end sessions this way; we keep none
+        if urllib.parse.urlparse(self.path).path.rstrip("/") == "/mcp": return self._send(405, b"no sessions", "text/plain", (("Allow", "POST"),))
+        self._send(404, b"not found", "text/plain")
+
     def do_GET(self): self._route("GET")
     def do_POST(self): self._route("POST")
 
@@ -549,12 +578,22 @@ def lan_ip():
         return "localhost"
 
 
+TOKEN_CHARS = "abcdefghjkmnpqrstuvwxyz23456789"          # lowercase, no look-alikes: easy to type on a phone
+
+
+def short_token(n=6):
+    return "".join(secrets.choice(TOKEN_CHARS) for _ in range(n))
+
+
 def web_token(listen, token=""):
-    """Token for the web console: required (and generated once) when it listens beyond this machine."""
+    """Token for the web console: required (and generated once) when it listens beyond this machine.
+    Short on purpose (typed on phones); wrong guesses are rate limited per address."""
     cfg = load_cfg()
     token = token or cfg.get("token", "")
+    if token and token == cfg.get("token") and len(token) > 8:           # an older, longer generated token
+        token = ""
     if listen not in ("127.0.0.1", "localhost", "::1") and not token:
-        token = secrets.token_urlsafe(9); cfg["token"] = token; save_cfg(cfg)
+        token = short_token(); cfg["token"] = token; save_cfg(cfg)
     return token
 
 

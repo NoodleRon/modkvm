@@ -21,13 +21,14 @@ apt packages only; the code uses Python's standard library.
 | `ffmpeg` | camera capture (PBSEE) |
 | `v4l-utils` | camera controls (PBSEE) |
 | `python3-pil`, `python3-numpy` | image processing (PBSEE) |
+| `qrencode` | QR code for the web link (optional) |
 | `sudo` | PBKEY runs as root |
 
 Also: Bluetooth adapter (USB 4.0+), `bluetoothd` started with `-P input`, `uvcvideo` module and your user in `video` for webcams (`python3 pbsee.py doctor --fix`), Python 3.8+. Clients: any modern browser; `claude` CLI for MCP.
 
 ```
 ./install-deps.sh
-# = sudo apt install bluez python3-dbus python3-gi python3-evdev ffmpeg v4l-utils python3-pil python3-numpy
+# = sudo apt install bluez python3-dbus python3-gi python3-evdev ffmpeg v4l-utils python3-pil python3-numpy qrencode
 ```
 
 ## Install
@@ -54,7 +55,9 @@ Typing goes straight to the active device. The top line stays pinned: `Portabott
 | `h` | re-home pointer to top-left |
 | `+` `-` | map size ±10 % |
 | `c` | camera server (PBSEE) on / off; **on by default**, the last choice is remembered |
-| `w` | print the web link |
+| `n` | rename this server (the Bluetooth name phones see): type, Enter saves, Esc cancels |
+| `r` | rename a device (pick `1-9`, or Enter for the active one); empty name resets it |
+| `w` | print the web link (clickable) and a QR code |
 | `d` / `f` / `q` | drop / forget (y) / quit |
 
 - **Mouse** is on by default. **Over SSH it is the pointer of the computer you SSH from** (terminal mouse; on when the terminal reports it, or is xterm-family; it disables text selection there). **At the server itself** a trackpad or USB mouse is captured automatically (the server's cursor freezes while captured): relative, lift-and-continue; tap = click, two-finger tap = right click, two-finger drag = scroll; `Ctrl+]` `t` toggles it. `--pad` forces the server's pad over SSH.
@@ -71,13 +74,13 @@ Typing goes straight to the active device. The top line stays pinned: `Portabott
 Cameras are data: `pbsee.json`, one entry per camera (`match`: `usb:VID:PID` / `name:` / `serial:` / `path:`; `size`, `fps`, `controls`, `opts`); `pbs probe` writes it. Localhost-only by default; beyond that a token is required.
 
 ## Web console
-Served by PBKEY on port 8800, on the local network by default; the link carries a token (generated once, kept in `portabotty.json`). `--web-listen 127.0.0.1` keeps it local. `--no-web` turns it off. Start-up shows `web: <link>`, or why it's off. Not reachable from another computer: `sudo ufw allow 8800/tcp` (Key prints this when ufw blocks it) and use the printed link including `?t=` (without the token: 401).
+Served by PBKEY on port 8800, on the local network by default. The link carries a short token (6 lowercase characters, easy to type on a phone; generated once, kept in `portabotty.json`, typing it in capitals works too). Wrong guesses are rate limited (8 per minute per address). `--web-listen 127.0.0.1` keeps it local; `--no-web` turns it off. Start-up shows `web [w] <link>` (clickable in terminals that support links), or why it's off. `Ctrl+]` `w` also prints a QR code to scan with a phone. Not reachable from another computer: `sudo ufw allow 8800/tcp` (Key prints this when ufw blocks it) and use the printed link including `?t=` (without the token: 401).
 
 Live image, device chips (tap to switch; a chip shows its linked view), key / see pills (green up, amber idle, red stopped). Works with either part down.
-- **◎ direct:** tap = click there, drag = swipe, long-press / two-finger tap = right click, wheel / two-finger drag = scroll. **▭ pad:** the image is a relative trackpad.
+- **◎ direct** (default on desktop): the image maps to the device screen: tap = click there, drag = swipe, long-press / two-finger tap = right click, wheel / two-finger drag = scroll. **▭ pad** (default on touch screens): the image is a relative trackpad. The button switches; the choice is remembered per browser.
 - **⌨** opens the device keyboard; on desktop just type. Keys, Ctrl/Alt/Cmd combos, F-keys, arrows forwarded.
 - **⋯** dock, collapsible, three tabs: **Tray** (esc tab ⌫ ⏎ arrows, sticky ⌃ ⌥ ⌘ ⇧, ⌂ = Cmd+H, Cmd+Space, Cmd+Tab; default on phones), **Keys** (full on-screen board, sticky modifiers, keys flash as they're sent), **Pad** (trackpad surface with a touch dot, tap = click, two fingers = scroll, Left / Middle / Right).
-- **Link** sheet: devices on the left, views (cameras) on the right. Drag a dot to the other side (or tap a device, then a view) to link them; × on the line unlinks. Choosing a device shows its linked view, and MCP `phone_look` uses it. Row chevrons expand the settings: device (solo, server trackpad, reconnect / disconnect, home pointer), view (rotate, gray, contrast, sharpness, width, calibrate / clear). The switch above Views turns the camera server on or off. Links are stored in `portabotty.json`.
+- **Link** sheet: devices on the left, views (cameras) on the right. Drag a dot to the other side (or tap a device, then a view) to link them; × on the line unlinks. Choosing a device shows its linked view, and MCP `phone_look` uses it. Row chevrons expand the settings: device (name, solo, server trackpad, reconnect / disconnect, home pointer), view (rotate, gray, contrast, sharpness, width, calibrate / clear). The switch above Views turns the camera server on or off; "This server" at the top renames the server. Links are stored in `portabotty.json`.
 
 ## Remote access (PBRELAY)
 Reach the console from anywhere without opening a port on your network. Run `relay.py` on any small public host (stdlib only; put TLS in front, e.g. Caddy or an AWS load balancer), and your server dials out to it.
@@ -88,12 +91,28 @@ pb --relay https://relay.example.com --relay-token AGENT_TOKEN   # saved; later 
 Browser and MCP: `https://relay.example.com/?t=ACCESS_TOKEN` (same pages, stream and `/mcp`). Shows "home server offline" when the server isn't connected.
 
 ## MCP
+Works with any MCP client: Streamable HTTP (`/mcp` on the web console, token as `?t=` or `Authorization: Bearer`) or stdio (`pbmcp.py`).
 ```
 claude mcp add --transport http portabotty http://SERVER:8800/mcp?t=<token>
 claude mcp add portabotty -- python3 ~/portabotty/pbmcp.py             # stdio alternative
 ```
-Tools: `phone_status`, `phone_use`, `phone_type`, `phone_key`, `phone_tap` (x,y fractions), `phone_scroll`, `phone_drag`, `phone_home_pointer`, `phone_look` (snapshot + change score; `settle` waits first).
-PBKEY API (`127.0.0.1:8809`, token in `.pbkey_token`): `GET /status`; `POST /use /drop /solo /mouse /type /key /goto /click /scroll /drag /move /home`.
+**Hermes Agent** (`~/.hermes/config.yaml`; `/reload-mcp` or restart, then `hermes mcp test portabotty`):
+```yaml
+mcp_servers:
+  portabotty:
+    url: "http://SERVER:8800/mcp"
+    headers:
+      Authorization: "Bearer <token>"
+    timeout: 120
+# or run it on the server itself, no token needed:
+#  portabotty:
+#    command: "python3"
+#    args: ["/home/you/portabotty/pbmcp.py"]
+```
+Tools appear as `mcp_portabotty_phone_*`; `phone_look` returns an image Hermes passes to vision models (text-only models get the file path). Optional skill that teaches the look-act-look loop: `cp -r skills/portabotty ~/.hermes/skills/` (also a standard `SKILL.md` for other agents).
+
+Tools: `phone_status`, `phone_use`, `phone_type`, `phone_key`, `phone_tap` (x,y fractions), `phone_scroll`, `phone_drag`, `phone_home_pointer`, `phone_look` (snapshot + change score; `settle` waits first; uses the view linked to the active device).
+PBKEY API (`127.0.0.1:8809`, token in `.pbkey_token`): `GET /status`; `POST /use /drop /solo /mouse /rename /type /key /goto /click /scroll /drag /move /home`.
 The API types into your devices and the camera shows their screens: keep localhost + token.
 
 ## Files

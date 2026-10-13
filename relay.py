@@ -16,7 +16,15 @@ LAST_SEEN = [0.0]
 LOCK = threading.Lock()
 
 
+FAILS = {}
+
+
 def ok(a, b): return bool(a) and hmac.compare_digest(a, b)
+
+
+def locked_out(ip, limit=8, window=60):
+    now = time.time(); FAILS[ip] = [t for t in FAILS.get(ip, []) if now - t < window]
+    return len(FAILS[ip]) >= limit
 
 
 class H(BaseHTTPRequestHandler):
@@ -33,7 +41,10 @@ class H(BaseHTTPRequestHandler):
 
     # ---- home agent side
     def _agent(self, method):
-        if not ok(self._bearer(), AGENT): return self._send(401, b"agent token")
+        ip = self.client_address[0]
+        if locked_out(ip): return self._send(429, b"too many wrong tokens, wait a minute")
+        if not ok(self._bearer(), AGENT):
+            FAILS.setdefault(ip, []).append(time.time()); return self._send(401, b"agent token")
         LAST_SEEN[0] = time.time()
         parts = urllib.parse.urlparse(self.path).path.split("/")[2:]
         if method == "GET" and parts == ["next"]:
@@ -53,8 +64,12 @@ class H(BaseHTTPRequestHandler):
     # ---- browser side
     def _browser(self, method):
         u = urllib.parse.urlparse(self.path); qs = urllib.parse.parse_qs(u.query)
+        ip = self.client_address[0]
+        if locked_out(ip): return self._send(429, b"too many wrong tokens, wait a minute")
         given = (qs.get("t") or [""])[-1] or self._bearer()
-        if not ok(given, TOKEN): return self._send(401, b"token required (?t=...)")
+        if not ok(given, TOKEN):
+            if given: FAILS.setdefault(ip, []).append(time.time())
+            return self._send(401, b"token required (?t=...)")
         if u.path == "/_relay": return self._send(200, json.dumps({"agent": time.time() - LAST_SEEN[0] < 60}).encode(), "application/json")
         if time.time() - LAST_SEEN[0] > 60: return self._send(503, b"home server offline")
         qs.pop("t", None)

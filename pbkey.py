@@ -13,7 +13,7 @@ Flags: --no-mouse (keyboard-only descriptor; re-pair after changing) | --no-pad 
        --install (creates pb, pbk, pbkb: work in any shell)
 """
 import os, re, sys, json, time, socket, struct, select, termios, atexit, subprocess, threading, signal, logging
-import fcntl, hmac, secrets, stat
+import fcntl, hmac, secrets, stat, shutil
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 try:
@@ -436,6 +436,11 @@ def say(msg="", end="\n"):
 _HDR = {"on": False, "redraw": False}
 
 
+def hyperlink(url, text=None):
+    """Clickable link (OSC 8); terminals without support just show the text."""
+    return f"\x1b]8;;{url}\x1b\\{text or url}\x1b]8;;\x1b\\"
+
+
 def header_text(cols):
     text = "Portabotty: Menu Ctrl+], then press the key in [ ]"
     return text if len(text) <= cols else text[:cols - 1] + "…"
@@ -493,7 +498,10 @@ def bonds(bus):
             out.append({"path": str(path), "addr": addr,
                         "name": str(d.get("Name", d.get("Alias", addr))),
                         "link": bool(d.get("Connected", False))})
-    out.sort(key=lambda b: (b["name"].lower(), b["addr"]))
+    out.sort(key=lambda b: (b["name"].lower(), b["addr"]))       # numbering follows the real name, not a nickname
+    nick = load_state().get("nicknames", {})
+    for b in out:
+        if nick.get(b["addr"]): b["name"] = nick[b["addr"]]
     return out
 
 def set_prop(bus, name, val):
@@ -680,9 +688,11 @@ class App:
         self.ssh = is_ssh()
         self.pads_auto = MOUSE and "--no-pad" not in sys.argv and (not self.ssh or "--pad" in sys.argv)
         self.pad_state = None
-        self.web_url = ""                      # set by main() when the web console is up
+        self.web_url = ""                      # set by main() when the web console is up (text shown)
+        self.web_link = ""                     # the bare link inside it
         self.see_proc = None                   # PBSEE child started by Key (on by default, remembered)
         self.want_see = bool(st.get("see", True))
+        self.server_name = st.get("name") or f"Portabotty {socket.gethostname()}"
         self.see_last = None
         self.last_see_check = 0.0
         self.last_scan = 0.0
@@ -717,8 +727,8 @@ class App:
         ptr = (f" | mouse [m] {(('map' if self.term_map else 'relative') + ' [a]') if self.mouse_term else 'off'}"
                f" | trackpad [t] {'ON' if self.pads else 'off'} | home [h] | size [+/-]") if MOUSE else " | keyboard-only"
         say(f"\n  solo [s] {'ON' if self.solo else 'OFF'}{ptr}")
-        say(f"  see [c] {SEE_DOT[self.see_now()]}" + (f" | web [w] {self.web_url}" if self.web_url else ""))
-        say("  pair [p] | drop [d] | forget [f] | quit [q]\n")
+        say(f"  see [c] {SEE_DOT[self.see_now()]}" + (f" | web [w] {self.web_text()}" if self.web_url else ""))
+        say(f"  name [n] {self.server_name} | rename [r] | pair [p] | drop [d] | forget [f] | quit [q]\n")
         return bl
 
     def banner(self):
@@ -734,6 +744,58 @@ class App:
         now = time.time()
         if now - self.last_hint > 3:
             self.last_hint = now; say(msg)
+
+    def read_line(self, fd, prompt, initial=""):
+        """Tiny line editor for the menu: type, Backspace, Enter saves, Esc cancels (None)."""
+        buf = bytearray(initial.encode())
+        def draw(): raw_out("\r\x1b[2K" + prompt + buf.decode("utf-8", "ignore"))
+        draw()
+        while not self.stop.is_set():
+            if self.stash: d, self.stash = self.stash, b""
+            else:
+                d = self.read(fd)
+                if d is None: return None
+            d = re.sub(rb"\x1b\[<[\d;]*[Mm]|\x1b\[\?[\d;]*\$y", b"", d)       # mouse noise
+            for i, ch in enumerate(d):
+                if ch in (10, 13):
+                    self.stash = d[i + 1:]; say(); return buf.decode("utf-8", "ignore").strip()
+                if ch == 27:
+                    say(); return None
+                if ch in (8, 127):
+                    while buf and (buf[-1] & 0xC0) == 0x80: buf.pop()      # a whole UTF-8 character
+                    if buf: buf.pop()
+                elif ch >= 32 and len(buf) < 60:
+                    buf.append(ch)
+            draw()
+        return None
+
+    def set_server_name(self, name):
+        name = " ".join(str(name).split())[:60]
+        if not name: raise ValueError("empty name")
+        set_prop(self.bus, "Alias", dbus.String(name))
+        self.server_name = name; save_state(name=name)
+        return name
+
+    def set_nickname(self, addr, name):
+        nick = dict(load_state().get("nicknames", {}))
+        name = " ".join(str(name).split())[:60]
+        if name: nick[addr] = name
+        else: nick.pop(addr, None)                                        # empty = back to its own name
+        save_state(nicknames=nick)
+        return name
+
+    def rename_server(self, fd):
+        name = self.read_line(fd, "Server name: ", self.server_name)
+        if not name: say("Cancelled."); return
+        try: say(f"Server name: {self.set_server_name(name)}")
+        except Exception as e: say(f"error: {e}")
+
+    def rename_device(self, fd):
+        b = self.ask_target("Rename", fd)
+        if not b: return
+        name = self.read_line(fd, f"Name for {b['name']}: ", b["name"])
+        if name is None: say("Cancelled."); return
+        say(f"Renamed: {self.set_nickname(b['addr'], name) or 'reset'}")
 
     def pick(self, arg):
         bl = bonds(self.bus)
@@ -937,6 +999,18 @@ class App:
         say("Cancelled."); return None
 
     # ---------- see (camera) + web indicators ----------
+    def web_text(self):
+        if self.web_link and self.web_url.startswith(self.web_link):
+            return hyperlink(self.web_link) + self.web_url[len(self.web_link):]
+        return self.web_url
+
+    def show_web(self):
+        if not self.web_url: say("web off"); return
+        say(self.web_text())
+        if self.web_link and shutil.which("qrencode"):
+            try: say(subprocess.run(["qrencode", "-t", "ANSIUTF8", "-m", "1", self.web_link], capture_output=True, text=True, timeout=3).stdout.rstrip())
+            except Exception: pass
+
     def see_now(self):
         return web.see_state() if web else "stopped"
 
@@ -1033,7 +1107,7 @@ class App:
         for i, b in enumerate(bonds(self.bus), 1):
             devs.append({"n": i, "name": b["name"], "addr": b["addr"], "active": b["addr"] == self.active,
                          "connected": self.hid.is_up(b["addr"])})
-        return {"active": self.active, "solo": self.solo, "devices": devs, "mouse_enabled": MOUSE,
+        return {"active": self.active, "solo": self.solo, "name": self.server_name, "devices": devs, "mouse_enabled": MOUSE,
                 "terminal_mouse": self.mouse_term, "terminal_map": self.term_map, "trackpad": bool(self.pads),
                 "pointer": None if self.vpos is None else
                 [round(self.vpos[0] / (MAP_W * self.map_gain), 3), round(self.vpos[1] / (MAP_H * self.map_gain), 3)]}
@@ -1090,6 +1164,12 @@ class App:
         if path == "/drop":
             self.drop(self.find_bond(body.get("device", self.active)))
             return self.snapshot()
+        if path == "/rename":
+            if "server" in body:
+                try: return {"server": self.set_server_name(body["server"])}
+                except ValueError as e: raise ApiError(str(e))
+            b = self.find_bond(body["device"])
+            return {"device": b["addr"], "name": self.set_nickname(b["addr"], body.get("name", "")) or None}
         if path == "/solo":
             if bool(body["on"]) != self.solo: self.toggle_solo()
             return self.snapshot()
@@ -1183,7 +1263,9 @@ class App:
             save_state(map_gain=round(self.map_gain, 3)); self.vpos = None
             say(f"Map x{self.map_gain:.2f}")
         elif k == "c": self.toggle_see()
-        elif k == "w": say(self.web_url or "web off")
+        elif k == "n": self.rename_server(fd)
+        elif k == "r": self.rename_device(fd)
+        elif k == "w": self.show_web()
         elif k == "d":
             b = self.ask_target("Drop", fd)
             if b: self.drop(b)
@@ -1390,7 +1472,7 @@ def main():
     dbus.mainloop.glib.DBusGMainLoop(set_as_default=True)
     dbus.mainloop.glib.threads_init()
     bus = dbus.SystemBus()
-    name = f"Portabotty {socket.gethostname()}"
+    name = load_state().get("name") or f"Portabotty {socket.gethostname()}"
 
     r = subprocess.run(["btmgmt", "class", "5", str(DEV_SUBCLASS)], capture_output=True, text=True)
     logging.info(f"btmgmt class: {(r.stdout or r.stderr).strip()[:120]}")
@@ -1415,6 +1497,7 @@ def main():
         "ServiceRecord": SDP_RECORD})
 
     app = App(bus)
+    app.server_name = name
     api_srv = web_srv = None
     if "--no-api" not in sys.argv:
         host, port = argval("--api-listen", "127.0.0.1"), int(argval("--api-port", API_PORT))
@@ -1433,7 +1516,7 @@ def main():
             try:
                 wtok = web.web_token(wl, argval("--web-token", ""))
                 web_srv = web.start_gateway(wl, wp, wtok)
-                app.web_url = web.web_url(wl, wp, wtok)
+                app.web_link = app.web_url = web.web_url(wl, wp, wtok)
                 web.SEE["state"] = lambda: app.want_see
                 web.SEE["set"] = app.set_see
                 fw = firewall_hint(wp) if wl == "0.0.0.0" else ""

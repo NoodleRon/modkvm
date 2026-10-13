@@ -136,7 +136,7 @@ def handle(m):
     if i is None: return None                                    # notifications need no reply
     def ok(result): return {"jsonrpc": "2.0", "id": i, "result": result}
     if method == "initialize":
-        return ok({"protocolVersion": p.get("protocolVersion", "2024-11-05"), "capabilities": {"tools": {}},
+        return ok({"protocolVersion": p.get("protocolVersion", "2024-11-05"), "capabilities": {"tools": {"listChanged": False}},
                    "serverInfo": {"name": "portabotty", "version": "1.0"},
                    "instructions": "Drive an iPhone/iPad/computer over Bluetooth (keyboard+pointer) and look at it through a webcam. "
                                    "Loop: act (phone_type/key/tap) -> phone_look with settle=1 -> decide. "
