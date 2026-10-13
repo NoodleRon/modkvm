@@ -14,7 +14,7 @@ Flags: --no-mouse (keyboard-only descriptor; re-pair after changing) | --no-pad 
 """
 import os, re, sys, json, time, socket, struct, select, termios, atexit, subprocess, threading, signal, logging
 import fcntl, hmac, secrets, stat, shutil
-import urllib.request, urllib.parse
+import urllib.request, urllib.parse, math
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 try:
@@ -1031,35 +1031,93 @@ class App:
         except Exception as e:
             return None, f"camera unavailable ({e})"
 
-    def calibrate(self, snap=None, settle=0.6, rounds=4, aim=0.8):
-        """Home the pointer, send it to a known spot, look where it really landed, fix the scale. Repeat.
-        snap() -> jpeg bytes of the phone screen. Returns a one-line result."""
+    def cal_cam_opts(self):
+        """(camera name, auth headers, its saved view options) for the camera linked to the active device."""
+        cam = web.load_cfg().get("links", {}).get(self.active, "") if web else ""
+        hdr = {"Authorization": "Bearer " + web.sb_token()} if web and web.sb_token() else {}
+        try:
+            cams = web.http_json(web.SB_URL + "/cams", hdr)
+            cams = cams.get("cams", cams) if isinstance(cams, dict) else cams
+            return cam, hdr, next((c.get("opts", {}) for c in cams if isinstance(c, dict) and c.get("name") == cam), {})
+        except Exception:
+            return cam, hdr, {}
+
+    def cal_set_tilt(self, deg):
+        cam, hdr, _ = self.cal_cam_opts()
+        req = urllib.request.Request(f"{web.SB_URL}/save/{urllib.parse.quote(cam)}", method="POST",
+                                     data=json.dumps({"tilt": round(deg, 2)}).encode(),
+                                     headers=dict(hdr, **{"Content-Type": "application/json"}))
+        urllib.request.urlopen(req, timeout=10).read()
+
+    def straighten(self, snap, tilt_get, tilt_set, settle, tries=2):
+        """Slide the pointer along a horizontal line near the top. Any slope in the picture is the camera being crooked:
+        turn the view by that much. Returns degrees applied (0 if already straight), or None if the pointer wasn't seen."""
+        total = 0.0
+        for _ in range(tries):
+            self.vpos = None
+            if not self.home(): return None
+            time.sleep(settle); ref = snap()
+            size = frame_size(ref) if ref else None
+            pts = []
+            for fx in (0.35, 0.85):                       # a line inside the screen, clear of the clipped edge
+                self.goto(fx, 0.2); time.sleep(settle)
+                now = snap(); hit = locate_pointer(ref, now) if now else None
+                if not hit or not size: return None
+                pts.append((hit[0] * size[0], hit[1] * size[1]))
+            ang = math.degrees(math.atan2(pts[1][1] - pts[0][1], pts[1][0] - pts[0][0]))
+            if abs(ang) < 0.6 or abs(ang) > 30: break
+            tilt_set(max(-45.0, min(45.0, tilt_get() + ang))); total += ang
+            time.sleep(settle)
+        return total
+
+    def fit_scale(self, snap, settle, rounds, aim):
+        """Home, aim at (aim, aim), look where the pointer really landed, correct the scale; the last pass only checks.
+        Returns the final miss (fraction of the screen), or None if the pointer wasn't seen."""
+        err = None
+        for i in range(rounds + 1):
+            self.vpos = None
+            if not self.home(): return None
+            time.sleep(settle); ref = snap()
+            self.goto(aim, aim); time.sleep(settle); now = snap()
+            hit = locate_pointer(ref, now) if ref and now else None
+            if not hit: return None
+            ax, ay = hit
+            err = max(abs(ax - aim), abs(ay - aim))
+            if err < 0.03 or i == rounds: break
+            self.gx *= min(3.0, max(0.33, aim / max(ax, 0.05)))
+            self.gy *= min(3.0, max(0.33, aim / max(ay, 0.05)))
+        return err
+
+    def calibrate(self, snap=None, settle=0.6, rounds=4, aim=0.8, tilt_get=None, tilt_set=None):
+        """Camera-assisted: fix the pointer scale, straighten a crooked view, fix the scale again. One line back."""
         if not (self.active and self.hid.is_up(self.active)): return "No connected phone."
         if snap is None:
             pic, why = self.cal_snap()
             if pic is None:
                 self.home(); return f"Pointer re-homed. For auto-calibration: {why}."
             snap = lambda: self.cal_snap()[0]
+            tilt_get = lambda: float(self.cal_cam_opts()[2].get("tilt") or 0)
+            tilt_set = self.cal_set_tilt
         gx0, gy0 = self.gx, self.gy
-        err = None
-        for i in range(rounds + 1):                       # the last pass only checks the result
-            self.vpos = None
-            if not self.home(): return "No connected phone."
-            time.sleep(settle); ref = snap()
-            self.goto(aim, aim); time.sleep(settle); now = snap()
-            hit = locate_pointer(ref, now) if ref and now else None
-            if not hit:
-                self.gx, self.gy = gx0, gy0
-                return "Couldn't see the pointer (is AssistiveTouch on, is the view in frame?). Unchanged."
-            ax, ay = hit
-            err = max(abs(ax - aim), abs(ay - aim))
-            if err < 0.03 or i == rounds: break
-            self.gx *= min(3.0, max(0.33, aim / max(ax, 0.05)))
-            self.gy *= min(3.0, max(0.33, aim / max(ay, 0.05)))
+        unseen = "Couldn't see the pointer (is AssistiveTouch on, is the view in frame?). Unchanged."
+        err = self.fit_scale(snap, settle, rounds, aim)
+        if err is None:
+            self.gx, self.gy = gx0, gy0; return unseen
+        turned = 0.0
+        if tilt_get and tilt_set:
+            try: turned = self.straighten(snap, tilt_get, tilt_set, settle)
+            except Exception: turned = None
+            if turned is None:
+                self.gx, self.gy = gx0, gy0; return unseen
+            if abs(turned) >= 0.6:
+                err = self.fit_scale(snap, settle, rounds, aim)
+                if err is None:
+                    self.gx, self.gy = gx0, gy0; return unseen
         self.vpos = None; self.home()
         cal = dict(load_state().get("map_cal", {})); cal[self.active] = [round(self.gx, 4), round(self.gy, 4)]
         save_state(map_cal=cal)
-        return f"Calibrated x{self.gx:.2f} y{self.gy:.2f}" + (f" (within {max(err, 0.01) * 100:.0f}%)" if err is not None else "")
+        return (f"Calibrated x{self.gx:.2f} y{self.gy:.2f} (within {max(err, 0.01) * 100:.0f}%)"
+                + (f", straightened {turned:+.1f}°" if abs(turned) >= 0.6 else ""))
 
     def goto(self, fx, fy, buttons=None):
         """Move the phone pointer to a fraction (0..1, 0..1) of its screen. Edges overshoot to self-correct drift."""
@@ -1603,9 +1661,10 @@ def make_api(app, token, host, port):
     return srv
 
 
-def locate_pointer(ref, img, corner=0.14, min_peak=9):
+def locate_pointer(ref, img, min_peak=9):
     """Where did the pointer appear between two pictures of the phone screen? (x, y) as fractions, or None.
-    The corner where it was parked is ignored; a change in overall brightness is ignored."""
+    `ref` has it parked in the top-left corner, so of the two changed spots (gone / arrived) the one farther from
+    that corner is the new position. A change in overall brightness is ignored."""
     try:
         from PIL import Image, ImageFilter
         import numpy as np, io
@@ -1617,11 +1676,32 @@ def locate_pointer(ref, img, corner=0.14, min_peak=9):
         d = pb - pa
         d = np.abs(d - np.median(d))
         h, w = d.shape
-        d[:int(h * corner) + 1, :int(w * corner) + 1] = 0
-        peak = d.max()
-        if peak < min_peak: return None
-        ys, xs = np.nonzero(d >= peak * 0.5)
-        return (float((xs.mean() + 0.5) / w), float((ys.mean() + 0.5) / h))
+        yy, xx = np.mgrid[0:h, 0:w]
+        def blob(dd):
+            peak = dd.max()
+            if peak < min_peak: return None, 0.0, dd
+            py, px = np.unravel_index(int(dd.argmax()), dd.shape)
+            near = (xx - px) ** 2 + (yy - py) ** 2 < (0.12 * w) ** 2
+            sel = near & (dd >= peak * 0.5)
+            ys, xs = np.nonzero(sel)
+            cx, cy = (xs.mean() + 0.5) / w, (ys.mean() + 0.5) / h
+            return (float(cx), float(cy)), float(peak), np.where((xx - px) ** 2 + (yy - py) ** 2 < (0.16 * w) ** 2, 0, dd)
+        b1, p1, rest = blob(d)
+        if b1 is None: return None
+        found = [b1]
+        b2, p2, _ = blob(rest)
+        if b2 is not None and p2 >= 0.35 * p1: found.append(b2)
+        best = max(found, key=lambda t: t[0] ** 2 + t[1] ** 2)
+        return best if best[0] ** 2 + best[1] ** 2 > 0.18 ** 2 else None
+    except Exception:
+        return None
+
+
+def frame_size(jpeg):
+    try:
+        from PIL import Image
+        import io
+        return Image.open(io.BytesIO(jpeg)).size
     except Exception:
         return None
 

@@ -53,7 +53,7 @@ Typing goes straight to the active device. The top line stays pinned: `Portabott
 | `k` | keyboard on / off (off: keys stay in this terminal, the mouse keeps working) |
 | `m` / `t` | terminal mouse / server trackpad |
 | `a` | mouse: **map** (window = device screen) / **relative** |
-| `h` | calibrate: homes the pointer, sends it to a known spot, looks where it really landed (camera linked to the device and its view marked in the web console) and fixes the map scale for that device; saved. No camera: just re-homes |
+| `h` | calibrate: homes the pointer, sends it to a known spot, looks where it really landed (camera linked to the device and its view marked in the web console) and fixes the map scale for that device; saved. It also straightens a crooked view (sets the view's tilt from the pointer's path). No camera: just re-homes |
 | `+` `-` | map size ±10 % by hand (not listed on screen) |
 | `c` | camera (PBSEE) on / off; **on by default** (`◐ on, idle` = running, nobody watching), the last choice is remembered |
 | `n` | rename the emulated device (the Bluetooth name phones see): type, Enter saves, Esc cancels |
@@ -82,7 +82,7 @@ Live image, device chips (tap to switch; a chip shows its linked view), key / se
 - **◎ direct** (default on desktop): the image maps to the device screen: tap = click there, drag = swipe, long-press / two-finger tap = right click, wheel / two-finger drag = scroll. **▭ pad** (default on touch screens): the image is a relative trackpad. The button switches; the choice is remembered per browser.
 - **⌨** opens the device keyboard; on desktop just type. Keys, Ctrl/Alt/Cmd combos, F-keys, arrows forwarded.
 - **⋯** dock, collapsible, three tabs: **Tray** (esc tab ⌫ ⏎ arrows, sticky ⌃ ⌥ ⌘ ⇧, ⌂ = Cmd+H, Cmd+Space, Cmd+Tab; default on phones), **Keys** (full on-screen board, sticky modifiers, keys flash as they're sent), **Pad** (trackpad surface with a touch dot, tap = click, two fingers = scroll, Left / Middle / Right).
-- **Link** sheet: devices on the left, views (cameras) on the right. Drag a dot to the other side (or tap a device, then a view) to link them; × on the line unlinks. Choosing a device shows its linked view, and MCP `phone_look` uses it. Row chevrons expand the settings: device (solo, server trackpad, reconnect / disconnect, home pointer), view (rotate, gray, contrast, sharpness, width, calibrate / clear). The switch above Views turns the camera server on or off; "This server" at the top renames the server. Links are stored in `portabotty.json`.
+- **Link** sheet: devices on the left, views (cameras) on the right. Drag a dot to the other side (or tap a device, then a view) to link them; × on the line unlinks. Choosing a device shows its linked view, and MCP `phone_look` uses it. Row chevrons expand the settings: device (solo, server trackpad, reconnect / disconnect, home pointer), view (rotate, tilt ±20° for a crooked camera, gray, contrast, sharpness, width, calibrate / clear). The switch above Views turns the camera server on or off; "This server" at the top renames the server. Links are stored in `portabotty.json`.
 
 ## Remote access (PBRELAY)
 Reach the console from anywhere without opening a port on your network. Run `relay.py` on any small public host (stdlib only; put TLS in front, e.g. Caddy or an AWS load balancer), and your server dials out to it.

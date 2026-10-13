@@ -26,7 +26,7 @@ DEVFS = os.environ.get("PBSEE_DEVFS", "/dev")
 CONFIG = os.environ.get("PBSEE_CONFIG", os.path.join(HERE, "pbsee.json"))
 IDLE_STOP = float(os.environ.get("PBSEE_IDLE", "10"))     # seconds without viewers before a camera stops
 CHANGE_THRESHOLD = 2.0                                        # mean abs pixel diff (0-255) that counts as "screen changed"
-OPT_KEYS = ("rot", "crop", "warp", "contrast", "sharp", "gamma", "gray", "w", "q")
+OPT_KEYS = ("rot", "tilt", "crop", "warp", "contrast", "sharp", "gamma", "gray", "w", "q")
 
 
 # ---------------------------------------------------------------- small helpers
@@ -183,23 +183,25 @@ def parse_opts(q, base):
     if q.get("raw") and q["raw"][-1] not in ("0", ""):
         o = {}
     def one(k): return q[k][-1] if k in q and q[k] else None
-    for k, cast in (("rot", int), ("w", int), ("q", int), ("contrast", float), ("sharp", float),
+    for k, cast in (("rot", int), ("tilt", float), ("w", int), ("q", int), ("contrast", float), ("sharp", float),
                     ("gamma", float), ("gray", int), ("fps", float)):
         v = one(k)
         if v not in (None, ""):
             try: o[k] = cast(v)
             except ValueError: pass
+    if "tilt" in o: o["tilt"] = max(-45.0, min(45.0, o["tilt"]))
     for k, n in (("crop", 4), ("warp", 8)):
         v = _nums(one(k), n) if one(k) else None
         if v: o[k] = v
     return o
 
 def needs_processing(o):
-    return bool(o.get("rot") or o.get("crop") or o.get("warp") or o.get("contrast") or o.get("sharp")
+    return bool(o.get("rot") or o.get("tilt") or o.get("crop") or o.get("warp") or o.get("contrast") or o.get("sharp")
                 or o.get("gray") or o.get("w") or (o.get("gamma") not in (None, 0, 1, 1.0)))
 
 def process(jpeg, o):
-    """Pass-through unless the view needs work. Order: warp/crop -> rotate -> contrast/gamma/sharpen -> resize."""
+    """Pass-through unless the view needs work. Order: tilt (crop views) -> warp/crop -> tilt (warped views) -> rotate -> contrast/gamma/sharpen -> resize.
+    tilt = degrees to straighten a crooked camera (counter-clockwise positive)."""
     if not needs_processing(o):
         return jpeg
     from PIL import Image, ImageOps, ImageEnhance
@@ -216,6 +218,9 @@ def process(jpeg, o):
         im.draft("RGB", (max(1, req[0]), max(1, req[1])))
     im = im.convert("RGB")
     W, H = im.size
+    tilt = float(o.get("tilt") or 0)
+    if tilt and not o.get("warp"):                       # straighten first so a plain crop can use every pixel
+        im = im.rotate(tilt, resample=R.BILINEAR)
     if o.get("warp"):
         wp = o["warp"]; pts = [(wp[i] * W, wp[i + 1] * H) for i in (0, 2, 4, 6)]
         d = lambda a, b: math.hypot(a[0] - b[0], a[1] - b[1])
@@ -224,6 +229,7 @@ def process(jpeg, o):
         if maxw and fw > maxw: ow, oh = ow * maxw / fw, oh * maxw / fw
         ow, oh = max(8, int(ow)), max(8, int(oh))
         im = im.transform((ow, oh), T.PERSPECTIVE, persp_coeffs(pts, ow, oh), R.BILINEAR)
+        if tilt: im = im.rotate(tilt, resample=R.BILINEAR)   # fixes a hastily marked quadrilateral
     elif o.get("crop"):
         x, y, w, h = o["crop"]
         im = im.crop((int(x * W), int(y * H), max(int((x + w) * W), int(x * W) + 1), max(int((y + h) * H), int(y * H) + 1)))
@@ -554,10 +560,11 @@ class Handler(BaseHTTPRequestHandler):
             elif _nums(body.get("warp"), 8): opts["warp"] = _nums(body["warp"], 8); opts.pop("crop", None)
             else: return self._send(400, b"need warp[8] or clear", "text/plain")
         else:
-            for k, cast in (("rot", int), ("w", int), ("q", int), ("contrast", float), ("sharp", float), ("gamma", float), ("gray", int)):
+            for k, cast in (("rot", int), ("tilt", float), ("w", int), ("q", int), ("contrast", float), ("sharp", float), ("gamma", float), ("gray", int)):
                 if k in body:
                     try: opts[k] = cast(body[k])
                     except (TypeError, ValueError): pass
+            if "tilt" in opts: opts["tilt"] = round(max(-45.0, min(45.0, float(opts["tilt"]))), 2)
             if _nums(body.get("crop"), 4): opts["crop"] = _nums(body["crop"], 4)
         State.reg.save_opts(cam, opts)
         self._json({"ok": True, "opts": cam.defaults()})

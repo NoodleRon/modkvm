@@ -365,6 +365,7 @@ function camRow(c){
   const o=c.opts||{},m=document.createElement('div');m.className='more';
   const s=(patch)=>saveCam(c.name,patch);
   m.append(setRow('Rotate',seg([[0,'0'],[90,'90'],[180,'180'],[270,'270']],o.rot||0,v=>s({rot:v}))));
+  m.append(setRow('Tilt',range(-20,20,.5,o.tilt||0,v=>s({tilt:v}))));
   m.append(setRow('Gray',sw(!!o.gray,v=>s({gray:v?1:0}))));
   m.append(setRow('Contrast',range(0,10,.5,o.contrast||0,v=>s({contrast:v}))));
   m.append(setRow('Sharpness',range(0,3,.5,o.sharp||0,v=>s({sharp:v}))));
