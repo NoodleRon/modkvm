@@ -71,7 +71,7 @@ Typing goes straight to the active device. A line prints when something changes 
 Cameras are data: `pbsee.json`, one entry per camera (`match`: `usb:VID:PID` / `name:` / `serial:` / `path:`; `size`, `fps`, `controls`, `opts`); `pbs probe` writes it. Localhost-only by default; beyond that a token is required.
 
 ## Web console
-Served by PBKEY on port 8800, on the local network by default; the link carries a token (generated once, kept in `portabotty.json`). `--web-listen 127.0.0.1` keeps it local. Over SSH, Key also prints the tunnel command and a `localhost` link (use it if a Mac browser hangs on LAN addresses: System Settings > Privacy & Security > Local Network); `--no-web` turns it off. Start-up shows `web: <link>`, or why it's off. Not reachable from another computer: `sudo ufw allow 8800/tcp` (Key prints this when ufw blocks it) and use the printed link including `?t=` (without the token: 401).
+Served by PBKEY on port 8800, on the local network by default; the link carries a token (generated once, kept in `portabotty.json`). `--web-listen 127.0.0.1` keeps it local. `--no-web` turns it off. Start-up shows `web: <link>`, or why it's off. Not reachable from another computer: `sudo ufw allow 8800/tcp` (Key prints this when ufw blocks it) and use the printed link including `?t=` (without the token: 401).
 
 Live image, device chips (tap to switch), key / see dots (green up, amber idle, red stopped). Works with either part down.
 - **◎ direct:** tap = click there, drag = swipe, long-press / two-finger tap = right click, wheel / two-finger drag = scroll.
