@@ -91,7 +91,7 @@ def hub_status():
 
 # ---------------------------------------------------------------- gateway (web console + proxies)
 CONSOLE = r"""<!doctype html><meta charset=utf-8><meta name=viewport content="width=device-width,initial-scale=1,viewport-fit=cover,user-scalable=no">
-<title>pbsee</title>
+<title>Portabotty</title>
 <style>
 :root{--bg:#0e0f11;--bar:#17181b;--fg:#e6e7ea;--dim:#8b8e96;--acc:#4da3ff;--ok:#3ecf74;--bad:#ff5d5d;--line:#26282d}
 @media (prefers-color-scheme:light){:root:not([data-t=dark]){--bg:#f3f4f6;--bar:#fff;--fg:#14151a;--dim:#6b6f78;--line:#dcdee3}}
@@ -115,10 +115,11 @@ a.b{display:flex;align-items:center;justify-content:center;min-width:40px;height
 #kb{position:fixed;left:0;top:0;width:1px;height:1px;opacity:0;border:0;padding:0}
 .ind{display:flex;align-items:center;gap:5px;color:var(--dim);font-size:13px}.ind i{width:8px;height:8px;border-radius:50%;background:var(--bad)}.ind.up i{background:var(--ok)}.ind.idle i{background:#e0b341}
 #cam:not([src]){display:none}
+#none{position:absolute;color:var(--dim);font-size:15px}
 </style>
 <div id=bar><span class=ind id=kbi><i></i>key</span><span class=ind id=sbi><i></i>see</span><div id=dev></div>
 <button id=mode aria-label=mode>◎</button><button id=kbd aria-label=keyboard>⌨</button><button id=tr aria-label=keys>⋯</button><a class=b href=view id=gear aria-label=view>⚙</a></div>
-<div id=stage><div id=wrap><img id=cam alt=""><i id=ptr></i><div id=pad></div></div></div>
+<div id=stage><div id=none></div><div id=wrap><img id=cam alt=""><i id=ptr></i><div id=pad></div></div></div>
 <div id=tray></div><input id=kb autocapitalize=off autocorrect=off autocomplete=off spellcheck=false aria-label=keyboard>
 <script>
 const T=new URLSearchParams(location.search).get('t')||'',$=id=>document.getElementById(id);
@@ -143,7 +144,7 @@ let tray_state={};
 let camSet=false;
 function poll(){fetch(U('/hub')).then(r=>r.json()).then(h=>{
   $('kbi').className='ind'+(h.kb?' up':'');$('sbi').className='ind'+(h.sb?(h.cam==='live'?' up':' idle'):'');
-  chips(h.status||{});
+  chips(h.status||{});$('none').textContent=camSet?'':(h.sb?'◐ no frames yet':'○ see stopped');
   if(h.sb&&!camSet)fetch(U('/cams')).then(r=>r.json()).then(c=>{const cam=(c.find(x=>x.present)||c[0]);if(cam){camSet=true;$('cam').src=U('/stream/'+encodeURIComponent(cam.name))}}).catch(()=>{});
   if(!h.sb&&camSet){camSet=false;$('cam').removeAttribute('src')}
  }).catch(()=>{$('kbi').className=$('sbi').className='ind'})}
