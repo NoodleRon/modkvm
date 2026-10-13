@@ -1,22 +1,30 @@
 #!/usr/bin/env python3
-"""PBKEY (Portobotty key): use this server's terminal (and trackpad) as a Bluetooth keyboard + mouse for your devices.
+"""PBKEY (Portabotty key): use this server's terminal (and trackpad) as a Bluetooth keyboard + mouse for your devices.
 
 Everything you type is transmitted live to the active phone (nothing is buffered or echoed).
 Ctrl+]  opens the menu: 1-9 switch | p pair | s solo | m mouse (terminal) | t trackpad (server) | a map/relative |
         h re-home pointer | + - map size | d drop | f forget | q quit
 Mouse (terminal window + server trackpad) is ON by default when detected.
-Also serves a local HTTP API (127.0.0.1:8809, token file next to this script) so agents/MCP can drive the phone.
-Flags: --no-mouse (keyboard-only descriptor; re-pair after changing) | --no-pad | --no-term-mouse | --no-api
-       --api-port N | --api-listen ADDR | --install (creates pbk and pbkb, work in any shell)
+Also serves a local HTTP API (127.0.0.1:8809, token file next to this script) and, with portabotty.py alongside, the web
+console + MCP (http://localhost:8800). See (webcam) shows as an indicator line; c starts/stops it, w prints the web link.
+Flags: --no-mouse (keyboard-only descriptor; re-pair after changing) | --no-pad | --no-term-mouse | --no-api | --no-web
+       --api-port N | --api-listen ADDR | --web-port N | --web-listen ADDR | --web-token T
+       --install (creates pb, pbk, pbkb: work in any shell)
 """
 import os, re, sys, json, time, socket, struct, select, termios, atexit, subprocess, threading, signal, logging
 import fcntl, hmac, secrets, stat
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+try:
+    import portabotty as web                  # web console + MCP gateway (optional file next to this one)
+except Exception:
+    web = None
 import dbus, dbus.service, dbus.mainloop.glib
 from gi.repository import GLib
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 
+SEE_DOT = {"live": "● live", "idle": "◐ idle", "stopped": "○ stopped"}
 HID_UUID = "00001124-0000-1000-8000-00805f9b34fb"
 PSM_CTRL, PSM_INTR = 0x11, 0x13
 ADAPTER = "/org/bluez/hci0"
@@ -71,9 +79,9 @@ SDP_RECORD = f"""<?xml version="1.0" encoding="UTF-8" ?>
  <attribute id="0x0006"><sequence><uint16 value="0x656e"/><uint16 value="0x006a"/><uint16 value="0x0100"/></sequence></attribute>
  <attribute id="0x0009"><sequence><sequence><uuid value="0x1124"/><uint16 value="0x0100"/></sequence></sequence></attribute>
  <attribute id="0x000d"><sequence><sequence><sequence><uuid value="0x0100"/><uint16 value="0x0013"/></sequence><sequence><uuid value="0x0011"/></sequence></sequence></sequence></attribute>
- <attribute id="0x0100"><text value="Portobotty Keyboard"/></attribute>
+ <attribute id="0x0100"><text value="Portabotty Keyboard"/></attribute>
  <attribute id="0x0101"><text value="Keyboard"/></attribute>
- <attribute id="0x0102"><text value="Portobotty"/></attribute>
+ <attribute id="0x0102"><text value="Portabotty"/></attribute>
  <attribute id="0x0200"><uint16 value="0x0100"/></attribute>
  <attribute id="0x0201"><uint16 value="0x0111"/></attribute>
  <attribute id="0x0202"><uint8 value="0x{DEV_SUBCLASS:02X}"/></attribute>
@@ -589,6 +597,10 @@ class App:
         self.mbtn = 0
         self.pads = []                         # server trackpad/mouse sources (evdev)
         self.pads_auto = MOUSE and "--no-pad" not in sys.argv
+        self.web_url = ""                      # set by main() when the web console is up
+        self.see_proc = None                   # PBSEE child started with the c hotkey
+        self.see_last = None
+        self.last_see_check = 0.0
         self.last_scan = 0.0
         self.term_map = st.get("term_map", True)      # terminal window <-> phone screen (absolute-feel)
         self.map_gain = float(st.get("map_gain", 1.0))
@@ -621,7 +633,8 @@ class App:
         say(f"\n  * = active target | solo: {'ON' if self.solo else 'OFF'} | "
             f"mouse: {('map' if self.term_map else 'relative') if self.mouse_term else 'off'} | "
             f"trackpad: {'ON' if self.pads else 'off'}"
-            f"{'' if MOUSE else ' | keyboard-only mode'}\n")
+            f"{'' if MOUSE else ' | keyboard-only mode'}")
+        say(f"  see: {SEE_DOT[self.see_now()]}" + (f" | web: {self.web_url}" if self.web_url else "") + "\n")
         return bl
 
     def banner(self):
@@ -825,7 +838,35 @@ class App:
             return self.pick(k)
         say("Cancelled."); return None
 
+    # ---------- see (camera) + web indicators ----------
+    def see_now(self):
+        return web.see_state() if web else "stopped"
+
+    def check_see(self):
+        """Inline indicator: prints a line only when PBSEE changes state (live / idle / stopped)."""
+        st = self.see_now()
+        if self.see_last is not None and st != self.see_last:
+            say(f"{SEE_DOT[st]} see")
+        self.see_last = st
+
+    def toggle_see(self):
+        p = self.see_proc
+        if p and p.poll() is None:
+            p.terminate(); self.see_proc = None; say("See off"); return
+        if web and web.port_open(web.SB_URL):
+            say("See is running in another terminal"); return
+        script = os.path.join(os.path.dirname(os.path.abspath(__file__)), "pbsee.py")
+        if not os.path.exists(script):
+            say("pbsee.py not found"); return
+        cmd = [sys.executable, script, "serve"]
+        if os.geteuid() == 0 and os.environ.get("SUDO_USER"):
+            cmd = ["sudo", "-u", os.environ["SUDO_USER"]] + cmd       # the camera needs the video group, not root
+        self.see_proc = subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                                         stderr=subprocess.DEVNULL, start_new_session=True)
+        say("See starting")
+
     def shutdown(self):
+        if self.see_proc and self.see_proc.poll() is None: self.see_proc.terminate()
         self.set_term_mouse(False, quiet=True)
         self.stop_pads()
         for addr in list(self.hid.conns):
@@ -999,7 +1040,7 @@ class App:
 
     def menu(self, fd):
         self.show()
-        say("1-9 switch  p pair  s solo  m mouse  t pad  a map  h home  +/- size  d drop  f forget  q quit")
+        say("1-9 switch  p pair  s solo  m mouse  t pad  a map  h home  +/- size  c see  w web  d drop  f forget  q quit")
         k = self.getkey(fd)
         if k is None: return
         if k.isdigit() and k != "0":
@@ -1022,6 +1063,8 @@ class App:
             self.map_gain = min(3.0, max(0.3, self.map_gain * (1.1 if k in "+=" else 1 / 1.1)))
             save_state(map_gain=round(self.map_gain, 3)); self.vpos = None
             say(f"Map x{self.map_gain:.2f}")
+        elif k == "c": self.toggle_see()
+        elif k == "w": say(self.web_url or "web off")
         elif k == "d":
             b = self.ask_target("Drop", fd)
             if b: self.drop(b)
@@ -1123,6 +1166,8 @@ class App:
                 if data: self.handle(fd, data)
                 if self.pads_auto and time.time() - self.last_scan > PAD_RESCAN:
                     self.last_scan = time.time(); self.scan_pads()
+                if time.time() - self.last_see_check > 2:
+                    self.last_see_check = time.time(); self.check_see()
         except Exception as e:
             say(f"console error: {e}")
         finally:
@@ -1205,12 +1250,12 @@ def install_launcher():
     script = ('#!/bin/sh\n# PBKEY launcher (created by pbkey.py --install). Works in any shell, local or SSH.\n'
               f'sudo pkill -f "[p]bkey\\.py" 2>/dev/null; sleep 1\nexec sudo python3 "{me}" "$@"\n')
     try:
-        for name in ("pbk", "pbkb"):
+        for name in ("pb", "pbk", "pbkb"):
             with open(f"/usr/local/bin/{name}", "w") as f: f.write(script)
             os.chmod(f"/usr/local/bin/{name}", 0o755)
     except PermissionError:
         sys.exit(f"Run:  sudo python3 {me} --install")
-    print("Installed pbk and pbkb (run from any shell, console or SSH).")
+    print("Installed pb, pbk, pbkb (run from any shell, console or SSH).")
 
 
 def main():
@@ -1219,7 +1264,7 @@ def main():
     dbus.mainloop.glib.DBusGMainLoop(set_as_default=True)
     dbus.mainloop.glib.threads_init()
     bus = dbus.SystemBus()
-    name = f"Portobotty {socket.gethostname()}"
+    name = f"Portabotty {socket.gethostname()}"
 
     r = subprocess.run(["btmgmt", "class", "5", str(DEV_SUBCLASS)], capture_output=True, text=True)
     logging.info(f"btmgmt class: {(r.stdout or r.stderr).strip()[:120]}")
@@ -1239,19 +1284,29 @@ def main():
     pm = dbus.Interface(bus.get_object("org.bluez", "/org/bluez"), "org.bluez.ProfileManager1")
     prof = Profile(bus, "/pbkey/hid")
     pm.RegisterProfile("/pbkey/hid", HID_UUID, {
-        "Name": "Portobotty Keyboard", "Role": "server",
+        "Name": "Portabotty Keyboard", "Role": "server",
         "RequireAuthentication": dbus.Boolean(False), "RequireAuthorization": dbus.Boolean(False),
         "ServiceRecord": SDP_RECORD})
 
     app = App(bus)
-    api_srv = None
+    api_srv = web_srv = None
     if "--no-api" not in sys.argv:
         host, port = argval("--api-listen", "127.0.0.1"), int(argval("--api-port", API_PORT))
+        tok = load_token()
         try:
-            api_srv = make_api(app, load_token(), host, port)
+            api_srv = make_api(app, tok, host, port)
             logging.info(f"API on http://{host}:{port}  token file: {TOKEN_FILE}")
         except OSError as e:
             logging.warning(f"API not started: {e}")
+        if api_srv and web and "--no-web" not in sys.argv:
+            wl, wp = argval("--web-listen", "0.0.0.0"), int(argval("--web-port", web.DB_PORT))
+            os.environ["PBKEY_TOKEN"] = tok; web.KB_URL = f"http://127.0.0.1:{port}"
+            try:
+                wtok = web.web_token(wl, argval("--web-token", ""))
+                web_srv = web.start_gateway(wl, wp, wtok)
+                app.web_url = web.web_url(wl, wp, wtok)
+            except OSError as e:
+                logging.warning(f"web console not started: {e}")
     loop = GLib.MainLoop()
     for sig in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
         signal.signal(sig, lambda *a: app.stop.set())
@@ -1264,6 +1319,7 @@ def main():
         tty_restore()
         app.stop_pads()
         if api_srv: api_srv.shutdown()
+        if web_srv: web_srv.shutdown()
         for a in list(app.hid.conns): app.hid.drop(a)
         for s in app.hid.servers: s.close()
         try: pm.UnregisterProfile("/pbkey/hid")

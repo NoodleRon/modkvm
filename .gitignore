@@ -2,7 +2,7 @@
 .pbkey_token
 .pbkey_state.json
 pbsee.json
-portobotty.json
-.portobotty/
+portabotty.json
+.portabotty/
 __pycache__/
 *.pyc

@@ -1,13 +1,9 @@
 #!/usr/bin/env python3
-"""Portobotty (pb): hub for PBKEY (keyboard + mouse to your devices) and PBSEE (webcam view), with one web console and MCP.
-
-  pb                     open pbk and pbs in their own terminal windows (desktop); hub + web console here
-  pb k | pb s            open only one   (also: pb key, pb kb, pb c, pb cam, pb see, pb sb)
-  pb --listen 0.0.0.0 [--token T]   web console beyond this machine (token required, auto-generated)
-  pb --install           create pb, pbk (pbkb), pbs (pbc) commands (sudo)
-Details: PORTOBOTTY.md
+"""Portabotty web gateway: the web console (live image, trackpad, keyboard) and MCP over HTTP, in front of PBKEY and PBSEE.
+Normally started by PBKEY (pbk). Standalone, without PBKEY:  python3 portabotty.py [--listen ADDR] [--port N] [--token T]
+Details: README.md
 """
-import os, sys, json, time, shlex, socket, shutil, select, secrets, hmac, argparse, threading, subprocess
+import os, sys, json, time, socket, secrets, hmac, argparse, threading
 import urllib.parse, urllib.request, urllib.error
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 
@@ -16,7 +12,7 @@ sys.path.insert(0, HERE)
 KB_PORT, SB_PORT, DB_PORT = 8809, 8808, 8800
 KB_URL = os.environ.get("PBKEY_URL", f"http://127.0.0.1:{KB_PORT}").rstrip("/")
 SB_URL = os.environ.get("PBSEE_URL", f"http://127.0.0.1:{SB_PORT}").rstrip("/")
-CONFIG = os.environ.get("PORTOBOTTY_CONFIG", os.path.join(HERE, "portobotty.json"))
+CONFIG = os.environ.get("PORTABOTTY_CONFIG", os.path.join(HERE, "portabotty.json"))
 KB_PATHS = {"status", "use", "drop", "solo", "mouse", "type", "key", "goto", "click", "scroll", "drag", "move", "home"}
 SB_GET = {"cams", "status", "stream", "snap"}
 SB_POST = {"calibrate", "save"}
@@ -37,6 +33,10 @@ def load_cfg():
 def save_cfg(cfg):
     fd = os.open(CONFIG, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     with os.fdopen(fd, "w") as f: json.dump(cfg, f, indent=1)
+    uid = os.environ.get("SUDO_UID")                       # written under sudo: keep it readable by you
+    if uid:
+        try: os.chown(CONFIG, int(uid), int(os.environ.get("SUDO_GID", uid)))
+        except OSError: pass
 
 
 def kb_token():
@@ -227,7 +227,7 @@ class Gateway:
 
 
 class Handler(BaseHTTPRequestHandler):
-    server_version = "portobotty"
+    server_version = "portabotty"
     def log_message(self, *a): pass
 
     def _send(self, code, body, ctype="application/json"):
@@ -317,50 +317,7 @@ def start_gateway(listen, port, token):
     return srv
 
 
-# ---------------------------------------------------------------- launching pbk / pbs in their own terminals
-def which_cmd(name):
-    """Command list for key / see: the installed launcher if there is one, else run the script directly."""
-    if name == "kb":
-        return ["pbk"] if shutil.which("pbk") else ["sudo", "python3", os.path.join(HERE, "pbkey.py")]
-    return ["pbs"] if shutil.which("pbs") else [sys.executable, os.path.join(HERE, "pbsee.py"), "run"]
-
-
-GUI_TERMS = [("gnome-terminal", ["--"]), ("kitty", []), ("wezterm", ["start", "--"]), ("alacritty", ["-e"]), ("konsole", ["-e"]),
-             ("xfce4-terminal", ["-x"]), ("xterm", ["-e"]), ("x-terminal-emulator", ["-e"])]
-
-
-def pick_mode():
-    """tmux (already inside your own tmux), gui (desktop terminal windows), or None (run pbk / pbs yourself)."""
-    if os.environ.get("TMUX") and shutil.which("tmux"): return "tmux"
-    if (os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY")) and any(shutil.which(t) for t, _ in GUI_TERMS): return "gui"
-    return None
-
-
-def launch(name, mode, last_pane=[None]):
-    """Open `name` (kb = key, sb = see) in a new pane / window. Returns True if something was started."""
-    cmd = which_cmd(name)
-    line = shlex.join(cmd)
-    if mode == "tmux":
-        if last_pane[0]:
-            alive = subprocess.run(["tmux", "list-panes", "-a", "-F", "#{pane_id}"], capture_output=True, text=True).stdout.split()
-            if last_pane[0] not in alive: last_pane[0] = None      # that pane closed (its program exited)
-        target = ["-t", last_pane[0]] if last_pane[0] else []
-        flag = ["-v"] if last_pane[0] else ["-h"]
-        r = subprocess.run(["tmux", "split-window", "-d", *flag, *target, "-P", "-F", "#{pane_id}", "-c", HERE, line],
-                           capture_output=True, text=True)
-        if r.returncode == 0: last_pane[0] = r.stdout.strip()
-        return r.returncode == 0
-    if mode == "gui":
-        wrapped = f"{line}; echo; echo '[exited]'; read _"
-        for term, pre in GUI_TERMS:
-            if shutil.which(term):
-                subprocess.Popen([term, *pre, "sh", "-c", wrapped], cwd=HERE, start_new_session=True,
-                                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                return True
-    return False
-
-
-# ---------------------------------------------------------------- hub screen
+# ---------------------------------------------------------------- start / urls
 def lan_ip():
     try:
         s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM); s.connect(("10.255.255.255", 1)); ip = s.getsockname()[0]; s.close()
@@ -369,90 +326,48 @@ def lan_ip():
         return "localhost"
 
 
-def render(h, url, mode=None):
-    kb = "●" if h["kb"] else "○"
-    active = ""
-    if h["status"]:
-        act = next((d["name"] for d in h["status"].get("devices", []) if d.get("active")), None)
-        active = f"  {act}" if act else ""
-    sb = {"live": "●", "idle": "◐"}.get(h["cam"], "●" if h["sb"] else "○") if h["sb"] else "○"
-    kcmd = "" if h["kb"] else "  pbk"
-    scmd = "" if h["sb"] else "  pbs"
-    keys = "k key  s see  q quit" if mode else "q quit"
-    return ["PORTOBOTTY", "", f"{kb} key{active}{kcmd}", f"{sb} see{scmd}", f"● web  {url}", "", keys]
-
-
-def cmd_hub(a):
-    import termios, tty
+def web_token(listen, token=""):
+    """Token for the web console: required (and generated once) when it listens beyond this machine."""
     cfg = load_cfg()
-    listen = a.listen or cfg.get("listen", "127.0.0.1")
-    port = a.port or int(cfg.get("port", DB_PORT))
-    token = a.token or cfg.get("token", "")
+    token = token or cfg.get("token", "")
     if listen not in ("127.0.0.1", "localhost", "::1") and not token:
         token = secrets.token_urlsafe(9); cfg["token"] = token; save_cfg(cfg)
-    try:
-        srv = start_gateway(listen, port, token)
-    except OSError as e:
-        sys.exit(f"db: cannot listen on {listen}:{port} ({e}). Already running?")
+    return token
+
+
+def web_url(listen, port, token):
     host = lan_ip() if listen == "0.0.0.0" else "localhost"
-    url = f"http://{host}:{port}/" + (f"?t={token}" if token else "")
-    mode = pick_mode()
-    want = sorted({WHICH[w] for w in a.which}) or ["kb", "sb"]
-    if not a.no_launch:
-        for n in want:
-            if not port_open(KB_URL if n == "kb" else SB_URL): launch(n, mode)
-    tty_ok = sys.stdin.isatty()
-    old = None
-    if tty_ok: old = termios.tcgetattr(sys.stdin); tty.setcbreak(sys.stdin.fileno())
-    sys.stdout.write("\x1b[?25l\x1b[2J")
+    return f"http://{host}:{port}/" + (f"?t={token}" if token else "")
+
+
+def see_state():
+    """'live' (frames flowing) / 'idle' (up, camera stopped until watched) / 'stopped' (PBSEE not running)."""
+    if not port_open(SB_URL): return "stopped"
     try:
-        while True:
-            h = hub_status()
-            sys.stdout.write("\x1b[H" + "".join(l + "\x1b[K\n" for l in render(h, url, mode)) + "\x1b[J"); sys.stdout.flush()
-            if tty_ok:
-                r, _, _ = select.select([sys.stdin], [], [], 1.0)
-                if r:
-                    k = sys.stdin.read(1)
-                    if k in ("q", "\x03"): break
-                    if k == "k" and not h["kb"]: launch("kb", mode)
-                    if k == "s" and not h["sb"]: launch("sb", mode)
-            else:
-                time.sleep(1.0)
-    except KeyboardInterrupt:
-        pass
-    finally:
-        sys.stdout.write("\x1b[?25h\x1b[2J\x1b[H"); sys.stdout.flush()
-        if old: termios.tcsetattr(sys.stdin, termios.TCSADRAIN, old)
-        srv.shutdown(); srv.server_close()
-
-
-def cmd_start(a):
-    """`pb`: hub screen, web console, and (desktop terminal or your own tmux) the two parts in their own windows."""
-    return cmd_hub(a)
-
-
-def install(a):
-    me = os.path.abspath(__file__)
-    sudo = [] if os.geteuid() == 0 else ["sudo"]
-    script = f'#!/bin/sh\n# Portobotty launcher (created by portobotty.py --install)\nexec {sys.executable} "{me}" "$@"\n'
-    subprocess.run(sudo + ["tee", "/usr/local/bin/pb"], input=script, text=True, stdout=subprocess.DEVNULL, check=True)
-    subprocess.run(sudo + ["chmod", "755", "/usr/local/bin/pb"], check=True)
-    print("Installed /usr/local/bin/pb")
-    kb, sb = os.path.join(HERE, "pbkey.py"), os.path.join(HERE, "pbsee.py")
-    if os.path.exists(kb): subprocess.run(sudo + ["python3", kb, "--install"])
-    if os.path.exists(sb): subprocess.run([sys.executable, sb, "install"])
+        cams = http_json(SB_URL + "/status", {"Authorization": "Bearer " + sb_token()}).get("cams", [])
+    except Exception:
+        return "idle"
+    if any(c.get("fps", 0) > 0 and (c.get("frame_age") is None or c["frame_age"] < 3) for c in cams): return "live"
+    return "idle"
 
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("which", nargs="*", choices=sorted(WHICH), help="open only these")
     ap.add_argument("--listen"); ap.add_argument("--port", type=int); ap.add_argument("--token")
-    ap.add_argument("--no-launch", action="store_true", help="hub and web console only")
-    ap.add_argument("--install", action="store_true")
-    ap.add_argument("--version", action="version", version="Portobotty 0.0.00001")
     a = ap.parse_args()
-    if a.install: return install(a)
-    cmd_start(a)
+    cfg = load_cfg()
+    listen = a.listen or cfg.get("listen", "0.0.0.0")
+    port = a.port or int(cfg.get("port", DB_PORT))
+    token = web_token(listen, a.token or "")
+    try:
+        start_gateway(listen, port, token)
+    except OSError as e:
+        sys.exit(f"cannot listen on {listen}:{port} ({e}). Already running?")
+    print(web_url(listen, port, token), flush=True)
+    try:
+        while True: time.sleep(3600)
+    except KeyboardInterrupt:
+        pass
 
 
 if __name__ == "__main__":

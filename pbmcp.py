@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-"""Portobotty MCP over stdio: thin wrapper over the PBKEY and PBSEE HTTP APIs (no phone or camera logic here).
+"""Portabotty MCP over stdio: thin wrapper over the PBKEY and PBSEE HTTP APIs (no phone or camera logic here).
 The hub (`pb`) already serves the same tools over HTTP at /mcp; use this file only for clients that need stdio.
 
   pbkey.py  (input,  http://127.0.0.1:8809, token file .pbkey_token next to pbkey.py)
   pbsee.py  (output, http://127.0.0.1:8808)
 
-Register (Claude Code):  claude mcp add portobotty -- python3 /path/to/pbmcp.py
+Register (Claude Code):  claude mcp add portabotty -- python3 /path/to/pbmcp.py
 Env: PBKEY_URL, PBKEY_TOKEN | PBKEY_TOKEN_FILE, PBSEE_URL, PBSEE_TOKEN, PBSEE_CAM (default camera name)
 Standard library only.
 """
@@ -126,7 +126,7 @@ def handle(m):
     def ok(result): return {"jsonrpc": "2.0", "id": i, "result": result}
     if method == "initialize":
         return ok({"protocolVersion": p.get("protocolVersion", "2024-11-05"), "capabilities": {"tools": {}},
-                   "serverInfo": {"name": "portobotty", "version": "1.0"},
+                   "serverInfo": {"name": "portabotty", "version": "1.0"},
                    "instructions": "Drive an iPhone/iPad/computer over Bluetooth (keyboard+pointer) and look at it through a webcam. "
                                    "Loop: act (phone_type/key/tap) -> phone_look with settle=1 -> decide. "
                                    "The screen may show passwords; never type secrets you were not given."})

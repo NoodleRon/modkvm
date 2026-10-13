@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""PBSEE (Portobotty see): tiny multi-camera viewer for the Portobotty server (separate from pbkey.py on purpose).
+"""PBSEE (Portabotty see): tiny multi-camera viewer for the Portabotty server (separate from pbkey.py on purpose).
 
 UVC webcams -> ffmpeg (MJPEG passthrough, no decode) -> optional light processing -> HTTP (live MJPEG, snapshots, JSON).
 Cameras only run while somebody is watching, then stop after IDLE_STOP seconds (saves CPU and USB bandwidth).
@@ -7,7 +7,8 @@ Cameras only run while somebody is watching, then stop after IDLE_STOP seconds (
   python3 pbsee.py doctor [--fix]       check (and fix) packages, driver, group, devices, a test capture
   python3 pbsee.py list                 cameras with stable paths, USB ids, formats
   python3 pbsee.py probe                config skeleton for the cameras found (paste into pbsee.json)
-  python3 pbsee.py run                  server + terminal status screen (Live/idle/stopped, latest picture where supported)
+  python3 pbsee.py run                  server + inline status lines (live / idle / stopped)  [default for `pbs`]
+  python3 pbsee.py screen               full-screen status view with the latest picture where the terminal supports it
   python3 pbsee.py serve [--listen 0.0.0.0] [--port 8808] [--token T] [--test-source]
   python3 pbsee.py snap NAME [-o out.jpg] [--raw]
   python3 pbsee.py install            the pbs / pbc commands, run once (uses sudo)
@@ -645,7 +646,28 @@ def state_line(st):
 
 
 def cmd_run(a):
-    """Server + a quiet status screen: Live / idle / stopped per camera, and (optionally) the latest picture."""
+    """Server + inline status lines (a line is printed only when the state changes)."""
+    srv, listen, port, token = start_server(a)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    print(f"http://{'localhost' if listen in ('127.0.0.1', '0.0.0.0') else listen}:{port}/" + (f"?t={token}" if token else ""), flush=True)
+    last = None
+    try:
+        while True:
+            State.reg.refresh()
+            sts = [c.status() for c in State.reg.cams.values()]
+            dot, word = state_line(sts[0]) if sts else ("○", "stopped")
+            if word != last:
+                print(f"{dot} see {word}" + (f"  {sts[0]['name']}" if sts else "  no camera"), flush=True)
+                last = word
+            time.sleep(1)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        State.reg.shutdown(); srv.shutdown(); srv.server_close()
+
+
+def cmd_screen(a):
+    """Server + a full-screen status view: Live / idle / stopped per camera, and (optionally) the latest picture."""
     import termios, tty
     srv, listen, port, token = start_server(a)
     threading.Thread(target=srv.serve_forever, daemon=True).start()
@@ -785,7 +807,7 @@ def cmd_doctor(a):
 
 def install_launcher():
     sudo = [] if os.geteuid() == 0 else ["sudo"]
-    script = ('#!/bin/sh\n# PBSEE launcher (created by pbsee.py install). Alone it runs the status screen + server.\n'
+    script = ('#!/bin/sh\n# PBSEE launcher (created by pbsee.py install). Alone it runs the server with inline status.\n'
               f'[ $# -eq 0 ] && set -- run\nexec {sys.executable} "{os.path.abspath(__file__)}" "$@"\n')
     for name in ("pbs", "pbc"):
         subprocess.run(sudo + ["tee", f"/usr/local/bin/{name}"], input=script, text=True, stdout=subprocess.DEVNULL, check=True)
@@ -829,7 +851,9 @@ def main():
     s = sub.add_parser("serve"); s.add_argument("--listen"); s.add_argument("--port", type=int); s.add_argument("--token")
     s.add_argument("--test-source", action="store_true", help="add a synthetic camera (no hardware needed)"); s.set_defaults(fn=cmd_serve)
     r = sub.add_parser("run"); r.add_argument("--listen"); r.add_argument("--port", type=int); r.add_argument("--token")
-    r.add_argument("--no-pic", action="store_true"); r.add_argument("--test-source", action="store_true"); r.set_defaults(fn=cmd_run)
+    r.add_argument("--test-source", action="store_true"); r.set_defaults(fn=cmd_run)
+    r = sub.add_parser("screen"); r.add_argument("--listen"); r.add_argument("--port", type=int); r.add_argument("--token")
+    r.add_argument("--no-pic", action="store_true"); r.add_argument("--test-source", action="store_true"); r.set_defaults(fn=cmd_screen)
     n = sub.add_parser("snap"); n.add_argument("name", nargs="?"); n.add_argument("-o"); n.add_argument("--raw", action="store_true")
     n.add_argument("--test-source", action="store_true"); n.set_defaults(fn=cmd_snap)
     sub.add_parser("install").set_defaults(fn=cmd_install)
