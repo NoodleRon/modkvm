@@ -756,6 +756,21 @@ class App:
         if self.active and self.hid.is_up(self.active):
             self.send_mouse(dx, dy, wheel, buttons)
 
+    def term_has_mouse(self, fd):
+        """Ask the terminal if it reports the mouse (SGR mode). No answer or 'unsupported' = leave it off.
+        Returns (supported, bytes the user typed meanwhile)."""
+        raw_out("\x1b[?1006$p")
+        end, buf = time.time() + 0.4, b""
+        pat = rb"\x1b\[\?1006;(\d)\$y"
+        while time.time() < end:
+            r, _, _ = select.select([fd], [], [], 0.05)
+            if r:
+                try: buf += os.read(fd, 4096)
+                except OSError: break
+                m = re.search(pat, buf)
+                if m: return m.group(1) in (b"1", b"2", b"3"), re.sub(pat, b"", buf)    # 0 unknown, 4 permanently off
+        return False, buf
+
     def term_size(self):
         try:
             rows, cols, xp, yp = struct.unpack("HHHH", fcntl.ioctl(sys.stdin.fileno(), termios.TIOCGWINSZ, b"\0" * 8))
@@ -1095,9 +1110,12 @@ class App:
             termios.tcflush(fd, termios.TCIFLUSH)
             self.banner()
             if MOUSE:
-                if "--no-term-mouse" not in sys.argv and os.environ.get("TERM", "linux") not in ("linux", "dumb"):
-                    self.set_term_mouse(True, quiet=True)
-                    say("Mouse ON")
+                if "--no-term-mouse" not in sys.argv:
+                    has, typed = self.term_has_mouse(fd)
+                    if has:
+                        self.set_term_mouse(True, quiet=True)
+                        say("Mouse ON")
+                    if typed: self.handle(fd, typed)                  # keys typed while we were asking
                 if self.pads_auto: self.scan_pads()
             while not self.stop.is_set():
                 data = self.read(fd)

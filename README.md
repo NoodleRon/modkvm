@@ -22,14 +22,13 @@ apt packages only; the code uses Python's standard library.
 | `ffmpeg` | camera capture (PBSEE) |
 | `v4l-utils` | camera controls (PBSEE) |
 | `python3-pil`, `python3-numpy` | image processing (PBSEE) |
-| `tmux` | `pb` panes over SSH (optional with a desktop terminal) |
 | `sudo` | PBKEY runs as root |
 
 Also: Bluetooth adapter (USB 4.0+), `bluetoothd` started with `-P input`, `uvcvideo` module and your user in `video` for webcams (`python3 pbsee.py doctor --fix`), Python 3.8+. Clients: any modern browser; `claude` CLI for MCP.
 
 ```
 ./install-deps.sh
-# = sudo apt install bluez python3-dbus python3-gi python3-evdev ffmpeg v4l-utils python3-pil python3-numpy tmux
+# = sudo apt install bluez python3-dbus python3-gi python3-evdev ffmpeg v4l-utils python3-pil python3-numpy
 ```
 
 ## Install
@@ -43,8 +42,8 @@ pb
 Update: `cd ~/portobotty && git pull`.
 
 ## pb
-- In tmux: panes for hub, pbk, pbs. Plain SSH: starts tmux session `portobotty` (`pb` reattaches). Desktop: two terminal windows. Neither: background processes, logs in `.portobotty/` (start `pbk` yourself; sudo can't prompt).
-- Hub keys: `k` / `s` start a stopped part, `q` quit hub.
+- Desktop: opens `pbk` and `pbs` in their own terminal windows. Plain SSH: the hub lists what's stopped with its command; run `pbk` / `pbs` in other terminals.
+- Hub keys: `k` / `s` start a stopped part (desktop), `q` quit hub.
 - Web console `http://localhost:8800/` (SSH: `ssh -L 8800:localhost:8800 server`). LAN: `pb --listen 0.0.0.0` (token auto-generated, in the printed URL).
 
 ## PBKEY
@@ -61,13 +60,13 @@ Typing goes straight to the active device. `Ctrl+]` then:
 | `+` `-` | map size ±10 % |
 | `d` / `f` / `q` | drop / forget (y) / quit |
 
-- **Mouse** is on by default when available. Trackpad or USB mouse: captured automatically, relative, lift-and-continue; tap = click, two-finger tap = right click, two-finger drag = scroll; `Ctrl+]` `t` releases it. Terminal mouse: auto-on when the terminal reports the mouse (not the Linux console); disables text selection there.
+- **Mouse** is on by default when available. Trackpad or USB mouse: captured automatically, relative, lift-and-continue; tap = click, two-finger tap = right click, two-finger drag = scroll; `Ctrl+]` `t` releases it. Terminal mouse: on when the terminal says it reports the mouse, otherwise off; it disables text selection there.
 - **Map** estimates position (HID is relative, targets accelerate); edges self-correct. Calibrate once: `Ctrl+]` `h`, move to the window's bottom-right; pointer short of the corner → `+`, past → `-`.
 - Flags: `--no-pad`, `--no-term-mouse`, `--no-mouse` (keyboard-only; re-pair), `--no-api`, `--api-port`, `--api-listen`.
 - **Targets:** iPhone, iPad, Mac, Windows, Linux, Android. iPhone needs AssistiveTouch (Settings > Accessibility > Touch) for a pointer. Cmd = GUI/Win key. Keys are sent as a US layout. iOS caches the HID descriptor: after `--no-mouse`, forget the bond on both sides and re-pair.
 
 ## PBSEE
-`pbs` serves the camera and shows `● live` / `◐ idle` / `○ stopped` (cameras run only while watched, stop after 10 s). Works in any terminal; where it supports inline images (kitty graphics or iTerm2 protocol) it also draws a latest picture (~1/s, 480 px), `p` toggles; `q` quits. `pbs list | snap NAME -o shot.jpg | doctor | probe | install-service`.
+`pbs` serves the camera and shows `● live` / `◐ idle` / `○ stopped` (cameras run only while watched, stop after 10 s). Works in any terminal; where inline images are supported it also draws a latest picture (~1/s, 480 px), `p` toggles; `q` quits. `pbs list | snap NAME -o shot.jpg | doctor | probe | install-service`.
 
 **Calibrate first** (`http://localhost:8800/view`): Calibrate screen → click the 4 corners (TL, TR, BR, BL) → Save view. Web taps map onto this view.
 

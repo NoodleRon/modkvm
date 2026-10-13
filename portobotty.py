@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Portobotty (pb): hub for PBKEY (keyboard + mouse to your devices) and PBSEE (webcam view), with one web console and MCP.
 
-  pb                     open pbk and pbs in their own terminals (tmux / GUI terminals); hub + web console here
+  pb                     open pbk and pbs in their own terminal windows (desktop); hub + web console here
   pb k | pb s            open only one   (also: pb key, pb kb, pb c, pb cam, pb see, pb sb)
   pb --listen 0.0.0.0 [--token T]   web console beyond this machine (token required, auto-generated)
   pb --install           create pb, pbk (pbkb), pbs (pbc) commands (sudo)
@@ -330,10 +330,10 @@ GUI_TERMS = [("gnome-terminal", ["--"]), ("kitty", []), ("wezterm", ["start", "-
 
 
 def pick_mode():
+    """tmux (already inside your own tmux), gui (desktop terminal windows), or None (run pbk / pbs yourself)."""
     if os.environ.get("TMUX") and shutil.which("tmux"): return "tmux"
     if (os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY")) and any(shutil.which(t) for t, _ in GUI_TERMS): return "gui"
-    if shutil.which("tmux"): return "session"
-    return "bg"
+    return None
 
 
 def launch(name, mode, last_pane=[None]):
@@ -357,12 +357,7 @@ def launch(name, mode, last_pane=[None]):
                 subprocess.Popen([term, *pre, "sh", "-c", wrapped], cwd=HERE, start_new_session=True,
                                  stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                 return True
-    # background fallback: log file, no sudo prompt possible
-    os.makedirs(os.path.join(HERE, ".portobotty"), exist_ok=True)
-    log = open(os.path.join(HERE, ".portobotty", f"{name}.log"), "ab")
-    if cmd[0] == "sudo": cmd = ["sudo", "-n"] + cmd[1:]
-    subprocess.Popen(cmd, cwd=HERE, stdout=log, stderr=log, stdin=subprocess.DEVNULL, start_new_session=True)
-    return True
+    return False
 
 
 # ---------------------------------------------------------------- hub screen
@@ -374,14 +369,17 @@ def lan_ip():
         return "localhost"
 
 
-def render(h, url):
+def render(h, url, mode=None):
     kb = "●" if h["kb"] else "○"
     active = ""
     if h["status"]:
         act = next((d["name"] for d in h["status"].get("devices", []) if d.get("active")), None)
         active = f"  {act}" if act else ""
     sb = {"live": "●", "idle": "◐"}.get(h["cam"], "●" if h["sb"] else "○") if h["sb"] else "○"
-    return ["PORTOBOTTY", "", f"{kb} key{active}", f"{sb} see", f"● web  {url}", "", "k key  s see  q quit"]
+    kcmd = "" if h["kb"] else "  pbk"
+    scmd = "" if h["sb"] else "  pbs"
+    keys = "k key  s see  q quit" if mode else "q quit"
+    return ["PORTOBOTTY", "", f"{kb} key{active}{kcmd}", f"{sb} see{scmd}", f"● web  {url}", "", keys]
 
 
 def cmd_hub(a):
@@ -410,7 +408,7 @@ def cmd_hub(a):
     try:
         while True:
             h = hub_status()
-            sys.stdout.write("\x1b[H" + "".join(l + "\x1b[K\n" for l in render(h, url)) + "\x1b[J"); sys.stdout.flush()
+            sys.stdout.write("\x1b[H" + "".join(l + "\x1b[K\n" for l in render(h, url, mode)) + "\x1b[J"); sys.stdout.flush()
             if tty_ok:
                 r, _, _ = select.select([sys.stdin], [], [], 1.0)
                 if r:
@@ -429,11 +427,8 @@ def cmd_hub(a):
 
 
 def cmd_start(a):
-    """`db` from a plain terminal: with no GUI and no tmux session yet, re-enter inside tmux so everything gets panes."""
-    if a.hub or a.no_launch or not sys.stdin.isatty() or pick_mode() != "session":
-        return cmd_hub(a)
-    args = [sys.executable, os.path.abspath(__file__), "--hub"] + sys.argv[1:]
-    os.execvp("tmux", ["tmux", "new-session", "-A", "-s", "portobotty", shlex.join(args)])
+    """`pb`: hub screen, web console, and (desktop terminal or your own tmux) the two parts in their own windows."""
+    return cmd_hub(a)
 
 
 def install(a):
@@ -453,7 +448,6 @@ def main():
     ap.add_argument("which", nargs="*", choices=sorted(WHICH), help="open only these")
     ap.add_argument("--listen"); ap.add_argument("--port", type=int); ap.add_argument("--token")
     ap.add_argument("--no-launch", action="store_true", help="hub and web console only")
-    ap.add_argument("--hub", action="store_true", help=argparse.SUPPRESS)
     ap.add_argument("--install", action="store_true")
     ap.add_argument("--version", action="version", version="Portobotty 0.0.00001")
     a = ap.parse_args()
