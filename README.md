@@ -36,13 +36,13 @@ sudo apt install bluez python3-dbus python3-gi python3-evdev ffmpeg v4l-utils py
 
 ## Install (once)
 ```
-cd ~/portobotty                              # this repo, cloned (or unzipped) to ~/portobotty
+git clone https://github.com/noodleron/portobotty.git ~/portobotty && cd ~/portobotty   # private repo: needs a GitHub login or SSH key on the server
 ./install-deps.sh                            # see Dependencies
 python3 pbsee.py doctor --fix                # camera driver + video group (re-login after)
 sudo python3 portobotty.py --install         # creates pb, pbk, pbkb, pbs, pbc (works in any shell, console or SSH)
 pb
 ```
-Update later: `git pull` in that folder.
+Update later: `cd ~/portobotty && git pull`.
 
 ## What `pb` does
 - Inside tmux: splits panes (hub, pbk, pbs). Plain SSH terminal: starts tmux session `portobotty` (reattach with `pb` or `tmux attach -t portobotty`). Desktop session: opens two terminal windows (gnome-terminal, kitty, wezterm, alacritty, konsole, xfce4-terminal, xterm). Neither available: background processes with logs in `.portobotty/` (sudo can't prompt there, so start `pbk` yourself).
