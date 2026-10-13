@@ -458,7 +458,7 @@ def header_lines(cols):
     if web:
         link, tail = web
         host = _HDR["host"]() if _HDR["host"] else None
-        if host: tail += f" | upgrade [u] hosting {host}"
+        if host: tail += f" | {host}"
         room = cols - len("Web: ")
         if len(link) > room:
             link, tail = "", (link + tail)
@@ -786,7 +786,7 @@ class App:
         say(f"\n  name [n] {self.server_name} | cam [c] {SEE_DOT[self.see_now()]}"
             f" | keyboard [k] {'ON' if self.kbd else 'OFF'} | solo [s] {'ON' if self.solo else 'OFF'}")
         say(ptr)
-        say("  pair [p] | drop [d] | forget [f] | restart [r] | quit [q]\n")
+        say("  pair [b] | drop [d] | forget [f] | restart [r] | quit [q]\n")
         return bl
 
     def banner(self):
@@ -1049,6 +1049,10 @@ class App:
     def hosting_text(self):
         if not self.relay or self.relay.stop_ev.is_set(): return "off"
         return ("● " if self.relay.ok else "○ ") + re.sub(r"^https?://", "", self.relay.url).rstrip("/")
+
+    def hosting_label(self):
+        ht = self.hosting_text()
+        return "hosted locally | [p] get paid hosting (coming soon)" if ht == "off" else f"hosted {ht} | [p] change"
 
     def start_hosting(self, url, token):
         """Dial out to a relay (no inbound port): remembered in portabotty.json. Empty URL turns it off."""
@@ -1325,7 +1329,7 @@ class App:
         if k.isdigit() and k != "0":
             b = self.pick(k)
             if b: self.use(b)
-        elif k == "p": self.pair()
+        elif k == "b": self.pair()
         elif k == "s": self.toggle_solo()
         elif k == "m":
             if MOUSE: self.set_term_mouse(not self.mouse_term)
@@ -1345,7 +1349,7 @@ class App:
         elif k == "c": self.toggle_see()
         elif k == "n": self.rename_server(fd)
         elif k == "k": self.toggle_keyboard()
-        elif k == "u": self.hosting(fd)
+        elif k == "p": self.hosting(fd)
         elif k == "d":
             b = self.ask_target("Drop", fd)
             if b: self.drop(b)
@@ -1429,7 +1433,7 @@ class App:
         fd = sys.stdin.fileno()
         time.sleep(0.5)
         cols, rows = self.term_size()[:2]
-        _HDR["web"] = self.web_header; _HDR["api"] = lambda: self.api_info; _HDR["host"] = self.hosting_text
+        _HDR["web"] = self.web_header; _HDR["api"] = lambda: self.api_info; _HDR["host"] = self.hosting_label
         self.host_last = None
         header_on(cols, rows, cursor_row(fd))
         bl = self.show()

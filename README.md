@@ -43,12 +43,12 @@ pb
 Update: `cd ~/portabotty && git pull`.
 
 ## PBKEY
-Typing goes straight to the active device. The top line stays pinned: `Portabotty 0.0.00001: Ctrl+] for menu, then press [key]`, with the clickable `Web: <link>` and `API: <url> | Token file: <path>` pinned under it (the Web row also carries `upgrade [u] hosting off`). The status lines show each key next to its indicator (`name [n]`, `cam [c] ● live`, `keyboard [k] ON`, `solo [s] ON`, `mouse [m] map [a]`, `trackpad [t]`). The screen is never cleared. The status block prints once at start; `Ctrl+]` then a key only logs what changed (`Solo ON`, `Mouse off`, ...), and `Ctrl+]` then Enter prints the status block again. `Ctrl+]` then:
+Typing goes straight to the active device. The top line stays pinned: `Portabotty 0.0.00001: Ctrl+] for menu, then press [key]`, with the clickable `Web: <link>` and `API: <url> | Token file: <path>` pinned under it (the Web row also says `hosted locally | [p] get paid hosting (coming soon)`, or `hosted ● <relay> | [p] change` when a relay is set). The status lines show each key next to its indicator (`name [n]`, `cam [c] ● live`, `keyboard [k] ON`, `solo [s] ON`, `mouse [m] map [a]`, `trackpad [t]`). The screen is never cleared. The status block prints once at start; `Ctrl+]` then a key only logs what changed (`Solo ON`, `Mouse off`, ...), and `Ctrl+]` then Enter prints the status block again. `Ctrl+]` then:
 
 | key | does |
 |---|---|
 | `1`-`9` | switch device (server dials it) |
-| `p` | pair mode, 120 s |
+| `b` | pair mode (Bluetooth visible), 120 s |
 | `s` | solo: switching disconnects the previous device |
 | `k` | keyboard on / off (off: keys stay in this terminal, the mouse keeps working) |
 | `m` / `t` | terminal mouse / server trackpad |
@@ -58,7 +58,7 @@ Typing goes straight to the active device. The top line stays pinned: `Portabott
 | `c` | camera (PBSEE) on / off; **on by default** (`◐ on, idle` = running, nobody watching), the last choice is remembered |
 | `n` | rename the emulated device (the Bluetooth name phones see): type, Enter saves, Esc cancels |
 | `d` / `f` | drop / forget (y) |
-| `u` | upgrade: hosting through a relay (URL + agent token; `● host` connected, `○ host` unreachable) |
+| `p` | hosting through a relay: URL + agent token, empty URL = back to local (`● host` connected, `○ host` unreachable) |
 | `r` / `q` | restart (restarts the Bluetooth service, re-runs Key, reconnects the active device) / quit |
 | Enter | print the status block again |
 
@@ -89,7 +89,7 @@ Reach the console from anywhere without opening a port on your network. Run `rel
 ```
 python3 relay.py --port 8080                                  # prints the access + agent tokens
 pb --relay https://relay.example.com --relay-token AGENT_TOKEN   # saved; later runs just `pb`
-                                                                  # or `Ctrl+]` `u`: type the relay URL and agent token, no restart; empty URL = off
+                                                                  # or `Ctrl+]` `p`: type the relay URL and agent token, no restart; empty URL = off
 ```
 Browser and MCP: `https://relay.example.com/?t=ACCESS_TOKEN` (same pages, stream and `/mcp`). Shows "home server offline" when the server isn't connected.
 
