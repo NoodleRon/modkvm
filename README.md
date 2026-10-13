@@ -53,8 +53,8 @@ Typing goes straight to the active device. The top line stays pinned: `Portabott
 | `k` | keyboard on / off (off: keys stay in this terminal, the mouse keeps working) |
 | `m` / `t` | terminal mouse / server trackpad |
 | `a` | mouse: **map** (window = device screen) / **relative** |
-| `h` | re-home pointer to top-left |
-| `+` `-` | map size ±10 % |
+| `h` | calibrate: homes the pointer, sends it to a known spot, looks where it really landed (camera linked to the device and its view marked in the web console) and fixes the map scale for that device; saved. No camera: just re-homes |
+| `+` `-` | map size ±10 % by hand (not listed on screen) |
 | `c` | camera (PBSEE) on / off; **on by default** (`◐ on, idle` = running, nobody watching), the last choice is remembered |
 | `n` | rename the emulated device (the Bluetooth name phones see): type, Enter saves, Esc cancels |
 | `d` / `f` | drop / forget (y) |
@@ -64,7 +64,7 @@ Typing goes straight to the active device. The top line stays pinned: `Portabott
 
 - **Mouse** is on by default. **Over SSH it is the pointer of the computer you SSH from** (terminal mouse; on when the terminal reports it, or is xterm-family; it disables text selection there). **At the server itself** a trackpad or USB mouse is captured automatically (the server's cursor freezes while captured): relative, lift-and-continue; tap = click, two-finger tap = right click, two-finger drag = scroll; `Ctrl+]` `t` toggles it. `--pad` forces the server's pad over SSH.
 - The target needs a pointer: iPhone/iPad show a round translucent dot once AssistiveTouch is on. If the pad does nothing: `sudo python3 pbkey.py --pads` lists input devices and counts live motion events (needs `python3-evdev`).
-- **Map** estimates position (HID is relative, targets accelerate); edges self-correct. Calibrate once: `Ctrl+]` `h`, move to the window's bottom-right; pointer short of the corner → `+`, past → `-`.
+- **Map** estimates position (HID is relative, targets accelerate); edges self-correct. Calibrate once per device with `Ctrl+]` `h` (needs the camera: AssistiveTouch on, the phone in view, its screen marked under Calibrate in the web console). Without a camera, `h` re-homes and `+` / `-` tune the size by eye.
 - Flags: `-v` (show start-up log lines), `--qr` (print a QR code for the web link), `--no-pad`, `--pad`, `--pads`, `--no-term-mouse`, `--no-mouse` (keyboard-only; re-pair), `--no-api`, `--api-port`, `--api-listen`, `--no-web`, `--web-port`, `--web-listen`, `--web-token`.
 - **Targets:** iPhone, iPad, Mac, Windows, Linux, Android. iPhone needs AssistiveTouch (Settings > Accessibility > Touch) for a pointer. Cmd = GUI/Win key. Keys are sent as a US layout. iOS caches the HID descriptor: after `--no-mouse`, forget the bond on both sides and re-pair.
 

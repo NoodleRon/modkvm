@@ -14,6 +14,7 @@ Flags: --no-mouse (keyboard-only descriptor; re-pair after changing) | --no-pad 
 """
 import os, re, sys, json, time, socket, struct, select, termios, atexit, subprocess, threading, signal, logging
 import fcntl, hmac, secrets, stat, shutil
+import urllib.request, urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 try:
@@ -757,6 +758,7 @@ class App:
         self.last_scan = 0.0
         self.term_map = st.get("term_map", True)      # terminal window <-> phone screen (absolute-feel)
         self.map_gain = float(st.get("map_gain", 1.0))
+        self.gx, self.gy = (st.get("map_cal", {}).get(st.get("active")) or [1.0, 1.0])[:2]   # camera calibration, per device (see calibrate)
         self.vpos = None                       # where we believe the phone's pointer is (counts); None = unknown
         self.restart = False
         self.api_info = ""; self.web_port = 0; self.web_tok = ""; self.relay = None
@@ -787,7 +789,7 @@ class App:
             mark = "*" if b["addr"] == self.active else " "
             say(f"{mark} {i:<5}{b['name'][:24]:<26}{b['addr']:<19}{self.status(b)}")
         ptr = (f"  mouse [m] {(('map' if self.term_map else 'relative') + ' [a]') if self.mouse_term else 'off'}"
-               f" | trackpad [t] {'ON' if self.pads else 'off'} | home [h] | size [+/-]") if MOUSE else "  no mouse"
+               f" | trackpad [t] {'ON' if self.pads else 'off'} | calibrate [h]") if MOUSE else "  no mouse"
         say(f"\n  name [n] {self.server_name} | cam [c] {SEE_DOT[self.see_now()]}"
             f" | keyboard [k] {'ON' if self.kbd else 'OFF'} | solo [s] {'ON' if self.solo else 'OFF'}")
         say(ptr)
@@ -858,6 +860,8 @@ class App:
     def set_active(self, addr):
         self.active = addr
         save_state(active=addr)
+        self.gx, self.gy = (load_state().get("map_cal", {}).get(addr) or [1.0, 1.0])[:2]
+        self.vpos = None
 
     def bt_disconnect(self, addr):
         try:
@@ -1003,15 +1007,65 @@ class App:
     def home(self):
         """Slam the phone pointer into its top-left corner so we know where it is."""
         if not (self.active and self.hid.is_up(self.active)): return False
-        self.send_mouse(int(-MAP_W * 1.3 * self.map_gain), int(-MAP_H * 1.3 * self.map_gain), 0, self.mbtn)
+        self.send_mouse(int(-self.map_w() * 1.3), int(-self.map_h() * 1.3), 0, self.mbtn)
         self.vpos = [0.0, 0.0]
         return True
+
+    def map_w(self): return MAP_W * self.map_gain * self.gx
+    def map_h(self): return MAP_H * self.map_gain * self.gy
+
+    def cal_snap(self):
+        """One picture of the phone from the camera linked to the active device. Returns (jpeg bytes, '') or (None, why)."""
+        if not web: return None, "no camera"
+        cam = web.load_cfg().get("links", {}).get(self.active, "")
+        if not cam: return None, "link a camera to this device in the web console"
+        try:
+            hdr = {"Authorization": "Bearer " + web.sb_token()} if web.sb_token() else {}
+            cams = web.http_json(web.SB_URL + "/cams", hdr)
+            cams = cams.get("cams", cams) if isinstance(cams, dict) else cams
+            opts = next((c.get("opts", {}) for c in cams if isinstance(c, dict) and c.get("name") == cam), {})
+            if not (opts.get("warp") or opts.get("crop")):
+                return None, "mark the phone's screen in the web console (Calibrate)"
+            req = urllib.request.Request(f"{web.SB_URL}/snap/{urllib.parse.quote(cam)}.jpg", headers=hdr)
+            with urllib.request.urlopen(req, timeout=20) as r: return r.read(), ""
+        except Exception as e:
+            return None, f"camera unavailable ({e})"
+
+    def calibrate(self, snap=None, settle=0.6, rounds=4, aim=0.8):
+        """Home the pointer, send it to a known spot, look where it really landed, fix the scale. Repeat.
+        snap() -> jpeg bytes of the phone screen. Returns a one-line result."""
+        if not (self.active and self.hid.is_up(self.active)): return "No connected phone."
+        if snap is None:
+            pic, why = self.cal_snap()
+            if pic is None:
+                self.home(); return f"Pointer re-homed. For auto-calibration: {why}."
+            snap = lambda: self.cal_snap()[0]
+        gx0, gy0 = self.gx, self.gy
+        err = None
+        for i in range(rounds + 1):                       # the last pass only checks the result
+            self.vpos = None
+            if not self.home(): return "No connected phone."
+            time.sleep(settle); ref = snap()
+            self.goto(aim, aim); time.sleep(settle); now = snap()
+            hit = locate_pointer(ref, now) if ref and now else None
+            if not hit:
+                self.gx, self.gy = gx0, gy0
+                return "Couldn't see the pointer (is AssistiveTouch on, is the view in frame?). Unchanged."
+            ax, ay = hit
+            err = max(abs(ax - aim), abs(ay - aim))
+            if err < 0.03 or i == rounds: break
+            self.gx *= min(3.0, max(0.33, aim / max(ax, 0.05)))
+            self.gy *= min(3.0, max(0.33, aim / max(ay, 0.05)))
+        self.vpos = None; self.home()
+        cal = dict(load_state().get("map_cal", {})); cal[self.active] = [round(self.gx, 4), round(self.gy, 4)]
+        save_state(map_cal=cal)
+        return f"Calibrated x{self.gx:.2f} y{self.gy:.2f}" + (f" (within {max(err, 0.01) * 100:.0f}%)" if err is not None else "")
 
     def goto(self, fx, fy, buttons=None):
         """Move the phone pointer to a fraction (0..1, 0..1) of its screen. Edges overshoot to self-correct drift."""
         b = self.mbtn if buttons is None else buttons
         if self.vpos is None and not self.home(): return False
-        W, H = MAP_W * self.map_gain, MAP_H * self.map_gain
+        W, H = self.map_w(), self.map_h()
         tx = -0.25 * W if fx <= 0.01 else 1.25 * W if fx >= 0.99 else fx * W
         ty = -0.25 * H if fy <= 0.01 else 1.25 * H if fy >= 0.99 else fy * H
         dx, dy = int(round(tx - self.vpos[0])), int(round(ty - self.vpos[1]))
@@ -1201,7 +1255,7 @@ class App:
         return {"active": self.active, "solo": self.solo, "name": self.server_name, "devices": devs, "mouse_enabled": MOUSE,
                 "terminal_mouse": self.mouse_term, "terminal_map": self.term_map, "trackpad": bool(self.pads),
                 "pointer": None if self.vpos is None else
-                [round(self.vpos[0] / (MAP_W * self.map_gain), 3), round(self.vpos[1] / (MAP_H * self.map_gain), 3)]}
+                [round(self.vpos[0] / self.map_w(), 3), round(self.vpos[1] / self.map_h(), 3)]}
 
     def need_target(self):
         if not self.ensure_target():
@@ -1275,8 +1329,8 @@ class App:
             dx, dy = int(body.get("dx", 0)), int(body.get("dy", 0))
             self.send_mouse(dx, dy, 0, self.mbtn)
             if self.vpos is not None:
-                self.vpos = [min(max(self.vpos[0] + dx, 0.0), MAP_W * self.map_gain),
-                             min(max(self.vpos[1] + dy, 0.0), MAP_H * self.map_gain)]
+                self.vpos = [min(max(self.vpos[0] + dx, 0.0), self.map_w()),
+                             min(max(self.vpos[1] + dy, 0.0), self.map_h())]
             return {}
         if path == "/goto":
             self.goto(self.frac(body, "x"), self.frac(body, "y")); return {"pointer": [body["x"], body["y"]]}
@@ -1346,7 +1400,7 @@ class App:
             self.term_map = not self.term_map; save_state(term_map=self.term_map); self.mpos = None
             say("Mouse: map" if self.term_map else "Mouse: relative")
         elif k == "h":
-            say("Pointer re-homed." if self.home() else "No connected phone.")
+            say("Calibrating..."); say(self.calibrate())
         elif k in "+=-_":
             self.map_gain = min(3.0, max(0.3, self.map_gain * (1.1 if k in "+=" else 1 / 1.1)))
             save_state(map_gain=round(self.map_gain, 3)); self.vpos = None
@@ -1547,6 +1601,29 @@ def make_api(app, token, host, port):
     srv.daemon_threads = True
     threading.Thread(target=srv.serve_forever, daemon=True).start()
     return srv
+
+
+def locate_pointer(ref, img, corner=0.14, min_peak=9):
+    """Where did the pointer appear between two pictures of the phone screen? (x, y) as fractions, or None.
+    The corner where it was parked is ignored; a change in overall brightness is ignored."""
+    try:
+        from PIL import Image, ImageFilter
+        import numpy as np, io
+        a = Image.open(io.BytesIO(ref)).convert("L")
+        size = (200, max(1, round(200 * a.height / a.width)))
+        def prep(im):
+            return np.asarray(im.convert("L").resize(size).filter(ImageFilter.GaussianBlur(2)), dtype=float)
+        pa, pb = prep(a), prep(Image.open(io.BytesIO(img)))
+        d = pb - pa
+        d = np.abs(d - np.median(d))
+        h, w = d.shape
+        d[:int(h * corner) + 1, :int(w * corner) + 1] = 0
+        peak = d.max()
+        if peak < min_peak: return None
+        ys, xs = np.nonzero(d >= peak * 0.5)
+        return (float((xs.mean() + 0.5) / w), float((ys.mean() + 0.5) / h))
+    except Exception:
+        return None
 
 
 def server_name_for(saved, host):
