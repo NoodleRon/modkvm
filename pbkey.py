@@ -9,6 +9,7 @@ Also serves a local HTTP API (127.0.0.1:8809, token file next to this script) an
 console + MCP (http://localhost:8800). See (webcam) shows as an indicator line; c starts/stops it, w prints the web link.
 Flags: --no-mouse (keyboard-only descriptor; re-pair after changing) | --no-pad | --no-term-mouse | --no-api | --no-web
        --api-port N | --api-listen ADDR | --web-port N | --web-listen ADDR | --web-token T | --relay URL --relay-token T
+       --pad (use the server's own trackpad/mouse even over SSH) | --pads (list input devices + live event test)
        --install (creates pb, pbk, pbkb: work in any shell)
 """
 import os, re, sys, json, time, socket, struct, select, termios, atexit, subprocess, threading, signal, logging
@@ -294,7 +295,7 @@ def classify(name, caps):
     if REL_X in caps.get(EV_REL, []) and REL_Y in caps.get(EV_REL, []) and BTN_LEFT in keys:
         return ("rel", None)
     ab = {c: info for c, info in caps.get(EV_ABS, [])}
-    if ABS_X in ab and ABS_Y in ab and BTN_TOUCH in keys and BTN_LEFT in keys:
+    if ABS_X in ab and ABS_Y in ab and BTN_TOUCH in keys and (BTN_LEFT in keys or BTN_TOOL_FINGER in keys):
         return ("abs", (ab[ABS_X].max - ab[ABS_X].min, ab[ABS_Y].max - ab[ABS_Y].min))
     return None
 
@@ -330,6 +331,7 @@ def open_pointer_devices(evdev, emit, skip=()):
         try:
             dev = evdev.InputDevice(path)
             kind = classify(dev.name, dev.capabilities())
+            if kind and kind[0] == "abs" and 1 in (getattr(dev, "input_props", lambda: [])() or []): kind = None   # INPUT_PROP_DIRECT = touchscreen
         except Exception:
             continue
         if not kind:
@@ -341,6 +343,60 @@ def open_pointer_devices(evdev, emit, skip=()):
         say(f"  using {dev.name} ({'mouse' if k == 'rel' else 'touchpad'})")
     for s in srcs: s.start()
     return srcs
+
+
+def is_ssh():
+    """True when this session came in over SSH (also through sudo, which strips the variables)."""
+    if os.environ.get("SSH_CONNECTION") or os.environ.get("SSH_TTY"): return True
+    pid = os.getppid()
+    for _ in range(6):
+        try:
+            if b"SSH_CONNECTION=" in open(f"/proc/{pid}/environ", "rb").read(): return True
+            pid = int(open(f"/proc/{pid}/stat").read().rsplit(")", 1)[1].split()[1])
+        except (OSError, ValueError, IndexError):
+            return False
+        if pid <= 1: return False
+    return False
+
+
+def firewall_hint(port):
+    """ufw active and not allowing the port -> the command that fixes it, else ''."""
+    try:
+        out = subprocess.run(["ufw", "status"], capture_output=True, text=True, timeout=3).stdout
+    except Exception:
+        return ""
+    if "Status: active" not in out or re.search(rf"^{port}(/tcp)?\s+ALLOW", out, re.M): return ""
+    return f"sudo ufw allow {port}/tcp"
+
+
+def pad_diagnose(seconds=6):
+    """sudo python3 pbkey.py --pads : every input device, how it is classified, and live event counts."""
+    try:
+        import evdev
+    except ImportError:
+        print("python3-evdev missing: sudo apt install python3-evdev"); return
+    if os.geteuid() != 0: print("(not root: devices may be unreadable, run with sudo)")
+    devs = []
+    for path in evdev.list_devices():
+        try:
+            d = evdev.InputDevice(path); kind = classify(d.name, d.capabilities())
+            direct = 1 in (getattr(d, "input_props", lambda: [])() or [])
+            print(f"{path:<20}{d.name[:36]:<38}{('mouse' if kind and kind[0]=='rel' else 'touchpad' if kind and not direct else 'skip')}")
+            devs.append((d, kind and not direct))
+        except Exception as e:
+            print(f"{path:<20}unreadable ({e})")
+    print(f"\nmove / touch the pointer now ({seconds}s)...")
+    counts = {d.path: 0 for d, _ in devs}
+    end = time.time() + seconds
+    while time.time() < end:
+        r, _, _ = select.select([d.fd for d, _ in devs], [], [], 0.2)
+        for d, _ in devs:
+            if d.fd in r:
+                try: counts[d.path] += sum(1 for e in d.read() if e.type in (EV_REL, EV_ABS))
+                except OSError: pass
+    for d, usable in devs:
+        if counts[d.path]: print(f"{d.path:<20}{counts[d.path]:>6} motion events  {d.name}{'' if usable else '  (not used: ' + ('touchscreen' if 1 in (getattr(d, 'input_props', lambda: [])() or []) else 'no pointer buttons/axes') + ')'}")
+    if not any(counts.values()): print("no motion seen on any device")
 
 
 # ---------------------------------------------------------------- terminal helpers
@@ -596,7 +652,9 @@ class App:
         self.mpos = None
         self.mbtn = 0
         self.pads = []                         # server trackpad/mouse sources (evdev)
-        self.pads_auto = MOUSE and "--no-pad" not in sys.argv
+        self.ssh = is_ssh()
+        self.pads_auto = MOUSE and "--no-pad" not in sys.argv and (not self.ssh or "--pad" in sys.argv)
+        self.pad_state = None
         self.web_url = ""                      # set by main() when the web console is up
         self.see_proc = None                   # PBSEE child started with the c hotkey
         self.see_last = None
@@ -751,14 +809,24 @@ class App:
         try:
             import evdev
         except ImportError:
-            if loud: say("python3-evdev missing")
+            self.pad_note("trackpad: needs python3-evdev", loud)
             return bool(self.pads)
         have = {p.dev.path for p in self.pads}
-        new = open_pointer_devices(evdev, self.pad_emit, skip=have)
+        try:
+            new = open_pointer_devices(evdev, self.pad_emit, skip=have)
+        except Exception as e:
+            self.pad_note(f"trackpad: {e}", loud); return bool(self.pads)
         self.pads += new
         if new:
-            say("Trackpad ON")
+            self.pad_note("Trackpad ON", True)
+        elif not self.pads:
+            self.pad_note("trackpad: none found", loud)
         return bool(self.pads)
+
+    def pad_note(self, msg, loud):
+        """Print a trackpad status line when it changes (or when asked for with the hotkey)."""
+        if loud or msg != self.pad_state: say(msg)
+        self.pad_state = msg
 
     def stop_pads(self):
         for p in self.pads: p.halt.set()
@@ -782,7 +850,8 @@ class App:
                 except OSError: break
                 m = re.search(pat, buf)
                 if m: return m.group(1) in (b"1", b"2", b"3"), re.sub(pat, b"", buf)    # 0 unknown, 4 permanently off
-        return False, buf
+        # no answer at all (e.g. macOS Terminal): trust an xterm-family TERM; a terminal without mouse ignores the request
+        return bool(re.match(r"(xterm|screen|tmux|rxvt|alacritty|kitty|foot|wezterm|ghostty|vte|konsole)", os.environ.get("TERM", ""))), buf
 
     def term_size(self):
         try:
@@ -1261,6 +1330,8 @@ def install_launcher():
 def main():
     if "--install" in sys.argv:
         return install_launcher()
+    if "--pads" in sys.argv:
+        return pad_diagnose()
     dbus.mainloop.glib.DBusGMainLoop(set_as_default=True)
     dbus.mainloop.glib.threads_init()
     bus = dbus.SystemBus()
@@ -1298,13 +1369,18 @@ def main():
             logging.info(f"API on http://{host}:{port}  token file: {TOKEN_FILE}")
         except OSError as e:
             logging.warning(f"API not started: {e}")
-        if api_srv and web and "--no-web" not in sys.argv:
+        if "--no-web" in sys.argv: pass
+        elif not web: app.web_url = "off (portabotty.py not found next to pbkey.py)"
+        elif not api_srv: app.web_url = "off (key API busy: another pbk running? sudo pkill -f '[p]bkey\\.py')"
+        else:
             wl, wp = argval("--web-listen", "0.0.0.0"), int(argval("--web-port", web.DB_PORT))
             os.environ["PBKEY_TOKEN"] = tok; web.KB_URL = f"http://127.0.0.1:{port}"
             try:
                 wtok = web.web_token(wl, argval("--web-token", ""))
                 web_srv = web.start_gateway(wl, wp, wtok)
                 app.web_url = web.web_url(wl, wp, wtok)
+                fw = firewall_hint(wp) if wl == "0.0.0.0" else ""
+                if fw: app.web_url += f"   (ufw blocks LAN: {fw})"
                 cfg = web.load_cfg()
                 ru, rt = argval("--relay", cfg.get("relay", "")), argval("--relay-token", cfg.get("relay_token", ""))
                 if ru and rt:
@@ -1313,7 +1389,7 @@ def main():
                     web.relay_agent(ru, rt, wp, wtok)
                     app.web_url += "  relay: " + ru.rstrip("/") + "/" + ("?t=<access token>")
             except OSError as e:
-                logging.warning(f"web console not started: {e}")
+                app.web_url = f"off ({e.strerror or e}: port {wp} busy? sudo pkill -f '[p]bkey\\.py')"
     loop = GLib.MainLoop()
     for sig in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
         signal.signal(sig, lambda *a: app.stop.set())
