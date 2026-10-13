@@ -10,11 +10,33 @@ Your Linux server as a Bluetooth keyboard + mouse for phones, tablets and comput
 
 `pb k`, `pb s`, `pb c` (also `pb key|kb|see|cam|sb`) open just one. Either part works without the other.
 
+## Dependencies
+All system packages (apt). Nothing from pip or npm: the Python code uses only the standard library.
+
+| package | needed for |
+|---|---|
+| `bluez` | Bluetooth daemon and `btmgmt` (PBKEY) |
+| `python3-dbus`, `python3-gi` | BlueZ control (PBKEY) |
+| `python3-evdev` | server trackpad/mouse capture (PBKEY, optional) |
+| `ffmpeg` | camera capture (PBSEE) |
+| `v4l-utils` | camera controls (PBSEE, recommended) |
+| `python3-pil`, `python3-numpy` | image processing (PBSEE) |
+| `tmux` | `pb` panes over SSH (optional with a desktop terminal) |
+| `sudo` | PBKEY runs as root |
+
+Also: Linux with a Bluetooth adapter (USB Bluetooth 4.0+ is fine), `bluetoothd` started with `-P input` (PBKEY listens on the HID ports itself), the `uvcvideo` kernel module and your user in the `video` group for webcams (`python3 pbsee.py doctor --fix` handles both), Python 3.8+. On the machines you use it from: any modern browser (web console); the `claude` CLI only for MCP.
+
+One command: `./install-deps.sh`
+
+```
+sudo apt install bluez python3-dbus python3-gi python3-evdev ffmpeg v4l-utils python3-pil python3-numpy tmux
+```
+
 ## Install (once)
 ```
 git clone https://github.com/ismailgunacar/portobotty.git ~/portobotty && cd ~/portobotty   # private repo: needs a GitHub login or SSH key on the server
-sudo apt install python3-evdev tmux          # trackpad capture; tmux for SSH
-python3 pbsee.py doctor --fix                # camera packages, driver, video group (re-login after)
+./install-deps.sh                            # see Dependencies
+python3 pbsee.py doctor --fix                # camera driver + video group (re-login after)
 sudo python3 portobotty.py --install         # creates pb, pbk, pbkb, pbs, pbc (works in any shell, console or SSH)
 pb
 ```
