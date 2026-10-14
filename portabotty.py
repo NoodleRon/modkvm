@@ -1,43 +1,1841 @@
 #!/usr/bin/env python3
-"""Portabotty web gateway: the web console (live image, trackpad, keyboard) and MCP over HTTP, in front of PBKEY and PBSEE.
-Normally started by PBKEY (pbk). Standalone, without PBKEY:  python3 portabotty.py [--listen ADDR] [--port N] [--token T]
-Details: README.md
+"""Portabotty: turn this Linux server into a Bluetooth keyboard + mouse for your devices, with a webcam view of
+their screens. One file, four modes (all installed as separate commands by `--install`):
+
+  pb / pbk / pbkb   kb mode (default): the terminal (and trackpad) as a BT keyboard + mouse. Runs as root.
+                    Everything you type is transmitted live to the active phone (nothing buffered/echoed).
+                    Ctrl+] opens the menu: 1-9 switch | p pair | s solo | m mouse (terminal) | t trackpad (server) |
+                    a map/relative | h re-home pointer | + - map size | c camera | n name | k keyboard on/off |
+                    u hosting | d drop | f forget | r restart | q quit
+                    Also starts the local HTTP API (127.0.0.1:8809) and, unless --no-web, the web console + MCP
+                    (http://localhost:8800, see mode 'web' below). The camera (mode 'see') starts automatically too
+                    (remembered; toggle with the 'c' menu key). See (webcam) shows as an indicator line;
+                    w prints the web link.
+  pb --pads         list input devices + live event test, then exit (no Bluetooth/web/camera started)
+  pbs / pbc         see mode: `python3 portabotty.py see ARGS` (ARGS = doctor/list/probe/serve/run/screen/snap/
+                    install/install-service). Multi-camera viewer; separate process from kb mode on purpose (a
+                    camera crash/hang can't take down the keyboard). Runs as your normal user (the `video` group).
+  (claude mcp add)  mcp mode: `python3 portabotty.py mcp` -- stdio MCP server (phone_status/_use/_type/_key/_tap/
+                    _scroll/_drag/_home_pointer/_look). The hub already serves the same tools over HTTP at /mcp;
+                    use this mode only for clients that need stdio.
+  (rarely needed)   web mode: `python3 portabotty.py web [--listen ADDR] [--port N] [--token T]` -- the web
+                    console + MCP-over-HTTP gateway standalone, against an already-running kb/see mode elsewhere.
+                    Normally kb mode starts this itself, in-process.
+
+kb mode flags: --no-mouse (keyboard-only descriptor; re-pair after changing) | --no-pad | --no-term-mouse
+       --no-api | --no-web | --api-port N | --api-listen ADDR | --web-port N | --web-listen ADDR | --web-token T
+       --relay URL --relay-token T | --pad (use the server's own trackpad/mouse even over SSH) | --pads
+--install (any mode): creates pb, pbk, pbkb, pbs, pbc (work in any shell). See mode details: `portabotty.py see -h`.
+Details: README.md / ARCHITECTURE.md
 """
-import os, sys, base64, json, time, socket, secrets, hmac, argparse, threading
-import urllib.parse, urllib.request, urllib.error
-from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
+import os, re, sys, io, glob, json, math, time, socket, struct, select, termios, atexit, getpass
+import subprocess, threading, signal, logging, fcntl, hmac, secrets, stat, shutil, base64, argparse
+import urllib.request, urllib.parse, urllib.error
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+import dbus, dbus.service, dbus.mainloop.glib
+from gi.repository import GLib
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-sys.path.insert(0, HERE)
-KB_PORT, SB_PORT, DB_PORT = 8809, 8808, 8800
+
+logging.basicConfig(level=logging.INFO if ("-v" in sys.argv or "--verbose" in sys.argv) else logging.WARNING, format="%(asctime)s [%(levelname)s] %(message)s")
+
+def _version():
+    try: return open(os.path.join(HERE, "VERSION")).read().strip()
+    except OSError: return "0.0.00001"
+VERSION = _version()
+SEE_DOT = {"live": "● live", "idle": "◐ on, idle", "stopped": "○ off"}
+HID_UUID = "00001124-0000-1000-8000-00805f9b34fb"
+PSM_CTRL, PSM_INTR = 0x11, 0x13
+ADAPTER = "/org/bluez/hci0"
+STATE_FILE = os.path.join(HERE, ".pbkey_state.json")
+MENU_KEY = 0x1D            # Ctrl+]  (change here if you want another menu hotkey)
+
+# ---- tuning knobs
+CELL_W, CELL_H = 9, 18     # mouse counts per terminal cell moved (terminals without pixel reporting)
+PAD_GAIN = 1200            # mouse counts for a full trackpad-width swipe
+PAD_SCROLL = 24            # wheel clicks for a full trackpad-height two-finger swipe
+PAD_NATURAL = True         # two-finger scroll direction (flip if it feels backwards)
+TAP_SECONDS = 0.25         # a touch shorter than this, with little movement, is a tap-click
+MAP_W, MAP_H = 1500, 2800  # mouse counts that span the phone screen (iOS pointer speed varies: tune with Ctrl+] + / -)
+PAD_RESCAN = 3.0           # seconds between looks for a newly plugged trackpad/mouse
+KB_PORT, SB_PORT, DB_PORT = 8809, 8808, 8800     # kb API, see API, web gateway
+
+MOUSE = "--no-mouse" not in sys.argv
+TOKEN_FILE = os.path.join(HERE, ".pbkey_token")
+
+
+def argval(flag, default):
+    if flag in sys.argv:
+        i = sys.argv.index(flag)
+        if i + 1 < len(sys.argv): return sys.argv[i + 1]
+    return default
+
+# Keyboard: report ID 1 (8 modifier bits, 1 reserved, 5 LEDs + pad, 6 keys)
+KBD_DESC = bytes([
+    0x05,0x01,0x09,0x06,0xA1,0x01,0x85,0x01,
+    0x75,0x01,0x95,0x08,0x05,0x07,0x19,0xE0,0x29,0xE7,0x15,0x00,0x25,0x01,0x81,0x02,
+    0x95,0x01,0x75,0x08,0x81,0x03,
+    0x95,0x05,0x75,0x01,0x05,0x08,0x19,0x01,0x29,0x05,0x91,0x02,
+    0x95,0x01,0x75,0x03,0x91,0x03,
+    0x95,0x06,0x75,0x08,0x15,0x00,0x26,0xFF,0x00,0x05,0x07,0x19,0x00,0x29,0xFF,0x81,0x00,
+    0xC0])
+# Mouse: report ID 2 (3 buttons + pad, then int8 X, Y, wheel; all relative)
+MOUSE_DESC = bytes([
+    0x05,0x01,0x09,0x02,0xA1,0x01,0x85,0x02,
+    0x09,0x01,0xA1,0x00,
+    0x05,0x09,0x19,0x01,0x29,0x03,0x15,0x00,0x25,0x01,0x95,0x03,0x75,0x01,0x81,0x02,
+    0x95,0x01,0x75,0x05,0x81,0x03,
+    0x05,0x01,0x09,0x30,0x09,0x31,0x09,0x38,0x15,0x81,0x25,0x7F,0x75,0x08,0x95,0x03,0x81,0x06,
+    0xC0,0xC0])
+REPORT_DESC = KBD_DESC + (MOUSE_DESC if MOUSE else b"")
+DEV_SUBCLASS = 0xC0 if MOUSE else 0x40      # 0x40 keyboard, 0xC0 keyboard+pointing
+
+SDP_RECORD = f"""<?xml version="1.0" encoding="UTF-8" ?>
+<record>
+ <attribute id="0x0001"><sequence><uuid value="0x1124"/></sequence></attribute>
+ <attribute id="0x0004"><sequence><sequence><uuid value="0x0100"/><uint16 value="0x0011"/></sequence><sequence><uuid value="0x0011"/></sequence></sequence></attribute>
+ <attribute id="0x0005"><sequence><uuid value="0x1002"/></sequence></attribute>
+ <attribute id="0x0006"><sequence><uint16 value="0x656e"/><uint16 value="0x006a"/><uint16 value="0x0100"/></sequence></attribute>
+ <attribute id="0x0009"><sequence><sequence><uuid value="0x1124"/><uint16 value="0x0100"/></sequence></sequence></attribute>
+ <attribute id="0x000d"><sequence><sequence><sequence><uuid value="0x0100"/><uint16 value="0x0013"/></sequence><sequence><uuid value="0x0011"/></sequence></sequence></sequence></attribute>
+ <attribute id="0x0100"><text value="Portabotty Keyboard"/></attribute>
+ <attribute id="0x0101"><text value="Keyboard"/></attribute>
+ <attribute id="0x0102"><text value="Portabotty"/></attribute>
+ <attribute id="0x0200"><uint16 value="0x0100"/></attribute>
+ <attribute id="0x0201"><uint16 value="0x0111"/></attribute>
+ <attribute id="0x0202"><uint8 value="0x{DEV_SUBCLASS:02X}"/></attribute>
+ <attribute id="0x0203"><uint8 value="0x00"/></attribute>
+ <attribute id="0x0204"><boolean value="true"/></attribute>
+ <attribute id="0x0205"><boolean value="true"/></attribute>
+ <attribute id="0x0206"><sequence><sequence><uint8 value="0x22"/><text encoding="hex" value="{REPORT_DESC.hex()}"/></sequence></sequence></attribute>
+ <attribute id="0x0207"><sequence><sequence><uint16 value="0x0409"/><uint16 value="0x0100"/></sequence></sequence></attribute>
+ <attribute id="0x020b"><uint16 value="0x0100"/></attribute>
+ <attribute id="0x020c"><uint16 value="0x0c80"/></attribute>
+ <attribute id="0x020d"><boolean value="true"/></attribute>
+ <attribute id="0x020e"><boolean value="false"/></attribute>
+ <attribute id="0x020f"><uint16 value="0x0640"/></attribute>
+ <attribute id="0x0210"><uint16 value="0x0320"/></attribute>
+</record>"""
+
+# ---------------------------------------------------------------- keyboard tables (US layout)
+ASCII = {" ": (0, 0x2C)}
+for _i, _c in enumerate("abcdefghijklmnopqrstuvwxyz"):
+    ASCII[_c] = (0, 0x04 + _i); ASCII[_c.upper()] = (0x02, 0x04 + _i)
+for _i, (_a, _b) in enumerate(zip("1234567890", "!@#$%^&*()")):
+    ASCII[_a] = (0, 0x1E + _i); ASCII[_b] = (0x02, 0x1E + _i)
+for _code, (_lo, _hi) in {0x2D: ("-", "_"), 0x2E: ("=", "+"), 0x2F: ("[", "{"), 0x30: ("]", "}"),
+                          0x31: ("\\", "|"), 0x33: (";", ":"), 0x34: ("'", '"'), 0x35: ("`", "~"),
+                          0x36: (",", "<"), 0x37: (".", ">"), 0x38: ("/", "?")}.items():
+    ASCII[_lo] = (0, _code); ASCII[_hi] = (0x02, _code)
+
+K_ENTER, K_ESC, K_BKSP, K_TAB = 0x28, 0x29, 0x2A, 0x2B
+CSI_KEYS = {b"A": 0x52, b"B": 0x51, b"C": 0x4F, b"D": 0x50, b"H": 0x4A, b"F": 0x4D}   # up down right left home end
+TILDE_KEYS = {b"1": 0x4A, b"2": 0x49, b"3": 0x4C, b"4": 0x4D, b"5": 0x4B, b"6": 0x4E, b"7": 0x4A, b"8": 0x4D}
+
+KEY_NAMES = {"enter": 0x28, "return": 0x28, "esc": 0x29, "escape": 0x29, "backspace": 0x2A, "tab": 0x2B,
+             "space": 0x2C, "delete": 0x4C, "home": 0x4A, "end": 0x4D, "pageup": 0x4B, "pagedown": 0x4E,
+             "up": 0x52, "down": 0x51, "left": 0x50, "right": 0x4F}
+for _n in range(1, 13): KEY_NAMES[f"f{_n}"] = 0x3A + _n - 1
+MOD_NAMES = {"ctrl": 1, "control": 1, "shift": 2, "alt": 4, "opt": 4, "option": 4,
+             "cmd": 8, "command": 8, "gui": 8, "super": 8, "meta": 8, "win": 8}
+
+
+def parse_combo(text):
+    """'cmd+shift+4' / 'enter' / 'ctrl+c' -> (modifier_bits, hid_code). Raises ValueError."""
+    mod, code = 0, None
+    for part in [p.strip().lower() for p in str(text).split("+") if p.strip()]:
+        if part in MOD_NAMES and not (code is None and part == str(text).strip().lower() and False):
+            mod |= MOD_NAMES[part]
+        elif part in KEY_NAMES:
+            code = KEY_NAMES[part]
+        elif len(part) == 1 and part in ASCII:
+            m, c = ASCII[part]; mod |= m; code = c
+        else:
+            raise ValueError(f"unknown key '{part}'")
+    if code is None: raise ValueError("no key in combo (modifiers alone can't be sent)")
+    return mod, code
+
+
+def parse_input(data):
+    """Terminal bytes -> ([('key', mod, hid) | ('mouse', cb, x, y, pressed) | ('mode', n, status)
+    | ('menu',) | ('skip',)], leftover_bytes_of_an_incomplete_escape_sequence)."""
+    ev, i, n = [], 0, len(data)
+    while i < n:
+        start = i
+        b = data[i]; i += 1
+        if b == MENU_KEY:
+            ev.append(("menu",))
+        elif b == 0x1B:
+            if i < n and data[i] in (0x5B, 0x4F):            # CSI / SS3 sequences
+                intro = data[i]; i += 1
+                params = b""
+                while i < n and not (0x40 <= data[i] <= 0x7E):
+                    params += bytes([data[i]]); i += 1
+                if i >= n:
+                    return ev, data[start:]                  # incomplete: wait for the rest
+                final = bytes([data[i]]); i += 1
+                if intro == 0x5B and params.startswith(b"<") and final in (b"M", b"m"):
+                    try:
+                        cb, x, y = (int(v) for v in params[1:].split(b";"))
+                        ev.append(("mouse", cb, x, y, final == b"M"))
+                    except ValueError:
+                        pass
+                elif intro == 0x5B and final == b"y" and params.startswith(b"?") and params.endswith(b"$"):
+                    try:
+                        mode, status = (int(v) for v in params[1:-1].split(b";"))
+                        ev.append(("mode", mode, status))
+                    except ValueError:
+                        pass
+                else:
+                    code = TILDE_KEYS.get(params.split(b";")[0]) if final == b"~" else CSI_KEYS.get(final)
+                    if code:
+                        ev.append(("key", 0, code))
+            elif i < n:                                      # Alt+char
+                ch = chr(data[i]); i += 1
+                if ch in ASCII:
+                    m, k = ASCII[ch]; ev.append(("key", m | 0x04, k))
+            else:
+                ev.append(("key", 0, K_ESC))
+        elif b in (0x0D, 0x0A):
+            ev.append(("key", 0, K_ENTER))
+        elif b in (0x7F, 0x08):
+            ev.append(("key", 0, K_BKSP))
+        elif b == 0x09:
+            ev.append(("key", 0, K_TAB))
+        elif 0x01 <= b <= 0x1A:                              # Ctrl+letter
+            ev.append(("key", 0x01, 0x04 + b - 1))
+        elif 0x20 <= b < 0x7F:
+            m, k = ASCII[chr(b)]; ev.append(("key", m, k))
+        elif b >= 0xC0:                                      # UTF-8 lead byte: can't type it
+            i += 3 if b >= 0xF0 else 2 if b >= 0xE0 else 1
+            ev.append(("skip",))
+    return ev, b""
+
+
+# ---------------------------------------------------------------- server trackpad / mouse (evdev)
+EV_SYN, EV_KEY, EV_REL, EV_ABS = 0, 1, 2, 3
+REL_X, REL_Y, REL_WHEEL = 0, 1, 8
+ABS_X, ABS_Y = 0, 1
+BTN_LEFT, BTN_RIGHT, BTN_MIDDLE, BTN_TOUCH = 0x110, 0x111, 0x112, 0x14A
+BTN_TOOL_FINGER, BTN_TOOL_DOUBLETAP, BTN_TOOL_TRIPLETAP = 0x145, 0x14D, 0x14E
+
+
+class PadTracker:
+    """Pure logic: raw evdev events -> emit(dx, dy, wheel, buttons). Handles mice and touchpads."""
+    def __init__(self, kind, xr, yr, emit):
+        self.kind, self.emit = kind, emit
+        self.xr, self.yr = max(int(xr), 1), max(int(yr), 1)
+        self.btn = 0
+        self.btn_for = {}                       # physical button -> HID bit it pressed
+        self.rx = self.ry = self.wheel = 0      # relative-device accumulators
+        self.x = self.y = self.px = self.py = None
+        self.tools = {BTN_TOOL_FINGER: 0, BTN_TOOL_DOUBLETAP: 0, BTN_TOOL_TRIPLETAP: 0}
+        self.fingers = self.maxf = 0
+        self.touching = self.clicked = False
+        self.t0 = 0.0
+        self.moved = 0
+        self.rem_x = self.rem_y = self.rem_w = 0.0
+
+    def feed(self, etype, code, value, now=None):
+        now = time.monotonic() if now is None else now
+        if etype == EV_KEY:
+            if code in (BTN_LEFT, BTN_RIGHT, BTN_MIDDLE):
+                if value:
+                    bit = {BTN_LEFT: 2 if self.fingers >= 2 else 1, BTN_RIGHT: 2, BTN_MIDDLE: 4}[code]
+                    self.btn_for[code] = bit
+                    self.btn |= bit
+                    self.clicked = True
+                else:
+                    self.btn &= ~self.btn_for.pop(code, 0)
+                self.emit(0, 0, 0, self.btn)
+            elif code in self.tools:
+                self.tools[code] = 1 if value else 0
+                n = 3 if self.tools[BTN_TOOL_TRIPLETAP] else 2 if self.tools[BTN_TOOL_DOUBLETAP] else \
+                    1 if self.tools[BTN_TOOL_FINGER] else 0
+                if n != self.fingers:
+                    self.fingers = n
+                    self.px = self.py = None            # avoid a jump when the finger count changes
+                    self.maxf = max(self.maxf, n)
+            elif code == BTN_TOUCH:
+                if value:
+                    self.touching, self.t0, self.moved, self.clicked = True, now, 0, False
+                    self.maxf = max(self.fingers, 1)
+                    self.px = self.py = None
+                else:
+                    was = self.touching
+                    self.touching = False
+                    self.px = self.py = None
+                    if (was and not self.clicked and now - self.t0 < TAP_SECONDS
+                            and self.moved < 0.025 * self.xr):
+                        bit = 2 if self.maxf >= 2 else 1
+                        self.emit(0, 0, 0, self.btn | bit)
+                        self.emit(0, 0, 0, self.btn)
+        elif etype == EV_ABS:
+            if code == ABS_X: self.x = value
+            elif code == ABS_Y: self.y = value
+        elif etype == EV_REL:
+            if code == REL_X: self.rx += value
+            elif code == REL_Y: self.ry += value
+            elif code == REL_WHEEL: self.wheel += value
+        elif etype == EV_SYN and code == 0:
+            self._frame()
+
+    def _frame(self):
+        if self.kind == "rel":
+            if self.rx or self.ry or self.wheel:
+                self.emit(self.rx, self.ry, self.wheel, self.btn)
+            self.rx = self.ry = self.wheel = 0
+            return
+        if not self.touching or self.x is None or self.y is None:
+            return
+        if self.px is not None:
+            dx, dy = self.x - self.px, self.y - self.py
+            self.moved += abs(dx) + abs(dy)
+            if self.fingers >= 2:
+                self.rem_w += dy / self.yr * PAD_SCROLL * (1 if PAD_NATURAL else -1)
+                w = int(self.rem_w); self.rem_w -= w
+                if w: self.emit(0, 0, w, self.btn)
+            else:
+                self.rem_x += dx / self.xr * PAD_GAIN       # same scale on both axes (isotropic)
+                self.rem_y += dy / self.xr * PAD_GAIN
+                ix, iy = int(self.rem_x), int(self.rem_y)
+                self.rem_x -= ix; self.rem_y -= iy
+                if ix or iy: self.emit(ix, iy, 0, self.btn)
+        self.px, self.py = self.x, self.y
+
+
+def classify(name, caps):
+    """evdev capabilities -> ('rel', None) for mice, ('abs', (xrange, yrange)) for touchpads, else None."""
+    low = name.lower()
+    if "touchscreen" in low or "stylus" in low:
+        return None
+    keys = caps.get(EV_KEY, [])
+    if REL_X in caps.get(EV_REL, []) and REL_Y in caps.get(EV_REL, []) and BTN_LEFT in keys:
+        return ("rel", None)
+    ab = {c: info for c, info in caps.get(EV_ABS, [])}
+    if ABS_X in ab and ABS_Y in ab and BTN_TOUCH in keys and (BTN_LEFT in keys or BTN_TOOL_FINGER in keys):
+        return ("abs", (ab[ABS_X].max - ab[ABS_X].min, ab[ABS_Y].max - ab[ABS_Y].min))
+    return None
+
+
+class PointerSource(threading.Thread):
+    def __init__(self, dev, tracker):
+        super().__init__(daemon=True)
+        self.dev, self.tracker, self.halt = dev, tracker, threading.Event()
+
+    def run(self):
+        try: self.dev.grab()                     # the server console stops reacting while captured
+        except Exception as e: say(f"(could not grab {self.dev.name}: {e})")
+        try:
+            while not self.halt.is_set():
+                r, _, _ = select.select([self.dev.fd], [], [], 0.2)
+                if not r: continue
+                try: events = list(self.dev.read())
+                except BlockingIOError: continue
+                except OSError: break
+                for e in events:
+                    self.tracker.feed(e.type, e.code, e.value)
+        finally:
+            try: self.dev.ungrab()
+            except Exception: pass
+            try: self.dev.close()
+            except Exception: pass
+
+
+def open_pointer_devices(evdev, emit, skip=()):
+    srcs = []
+    for path in evdev.list_devices():
+        if path in skip: continue
+        try:
+            dev = evdev.InputDevice(path)
+            kind = classify(dev.name, dev.capabilities())
+            if kind and kind[0] == "abs" and 1 in (getattr(dev, "input_props", lambda: [])() or []): kind = None   # INPUT_PROP_DIRECT = touchscreen
+        except Exception:
+            continue
+        if not kind:
+            try: dev.close()
+            except Exception: pass
+            continue
+        k, rng = kind
+        srcs.append(PointerSource(dev, PadTracker(k, *(rng or (1, 1)), emit)))
+        say(f"  using {dev.name} ({'mouse' if k == 'rel' else 'touchpad'})")
+    for s in srcs: s.start()
+    return srcs
+
+
+def is_ssh():
+    """True when this session came in over SSH (also through sudo, which strips the variables)."""
+    if os.environ.get("SSH_CONNECTION") or os.environ.get("SSH_TTY"): return True
+    pid = os.getppid()
+    for _ in range(6):
+        try:
+            if b"SSH_CONNECTION=" in open(f"/proc/{pid}/environ", "rb").read(): return True
+            pid = int(open(f"/proc/{pid}/stat").read().rsplit(")", 1)[1].split()[1])
+        except (OSError, ValueError, IndexError):
+            return False
+        if pid <= 1: return False
+    return False
+
+
+def firewall_hint(port):
+    """ufw active and not allowing the port -> the command that fixes it, else ''."""
+    try:
+        out = subprocess.run(["ufw", "status"], capture_output=True, text=True, timeout=3).stdout
+    except Exception:
+        return ""
+    if "Status: active" not in out or re.search(rf"^{port}(/tcp)?\s+ALLOW", out, re.M): return ""
+    return f"sudo ufw allow {port}/tcp"
+
+
+def pad_diagnose(seconds=6):
+    """sudo python3 portabotty.py --pads : every input device, how it is classified, and live event counts."""
+    try:
+        import evdev
+    except ImportError:
+        print("python3-evdev missing: sudo apt install python3-evdev"); return
+    if os.geteuid() != 0: print("(not root: devices may be unreadable, run with sudo)")
+    devs = []
+    for path in evdev.list_devices():
+        try:
+            d = evdev.InputDevice(path); kind = classify(d.name, d.capabilities())
+            direct = 1 in (getattr(d, "input_props", lambda: [])() or [])
+            print(f"{path:<20}{d.name[:36]:<38}{('mouse' if kind and kind[0]=='rel' else 'touchpad' if kind and not direct else 'skip')}")
+            devs.append((d, kind and not direct))
+        except Exception as e:
+            print(f"{path:<20}unreadable ({e})")
+    print(f"\nmove / touch the pointer now ({seconds}s)...")
+    counts = {d.path: 0 for d, _ in devs}
+    end = time.time() + seconds
+    while time.time() < end:
+        r, _, _ = select.select([d.fd for d, _ in devs], [], [], 0.2)
+        for d, _ in devs:
+            if d.fd in r:
+                try: counts[d.path] += sum(1 for e in d.read() if e.type in (EV_REL, EV_ABS))
+                except OSError: pass
+    for d, usable in devs:
+        if counts[d.path]: print(f"{d.path:<20}{counts[d.path]:>6} motion events  {d.name}{'' if usable else '  (not used: ' + ('touchscreen' if 1 in (getattr(d, 'input_props', lambda: [])() or []) else 'no pointer buttons/axes') + ')'}")
+    if not any(counts.values()): print("no motion seen on any device")
+
+
+# ---------------------------------------------------------------- terminal helpers
+_TTY = {"fd": None, "old": None}
+_MOUSE_REPORTING = {"on": False}
+# Terminal queries. A terminal that doesn't know them may print the last letter ("p"): save the cursor, ask, put it back, erase.
+PROBE_1006 = "\x1b7\x1b[?1006$p\x1b8\x1b[K"
+PROBE_1016 = "\x1b7\x1b[?1016$p\x1b8\x1b[K"
+MOUSE_OFF_SEQ = "\x1b[?1016l\x1b[?1003l\x1b[?1006l"
+
+def tty_raw(fd):
+    old = termios.tcgetattr(fd)
+    new = termios.tcgetattr(fd)
+    new[0] &= ~(termios.BRKINT | termios.ICRNL | termios.INPCK | termios.ISTRIP | termios.IXON)
+    new[2] |= termios.CS8
+    new[3] &= ~(termios.ECHO | termios.ICANON | termios.IEXTEN | termios.ISIG)
+    new[6][termios.VMIN] = 1
+    new[6][termios.VTIME] = 0
+    termios.tcsetattr(fd, termios.TCSADRAIN, new)
+    _TTY["fd"], _TTY["old"] = fd, old
+
+def tty_restore():
+    if _MOUSE_REPORTING["on"]:
+        raw_out(MOUSE_OFF_SEQ); _MOUSE_REPORTING["on"] = False
+    if _TTY["old"] is not None:
+        try: termios.tcsetattr(_TTY["fd"], termios.TCSADRAIN, _TTY["old"])
+        except Exception: pass
+        _TTY["old"] = None
+
+def raw_out(s):
+    try:
+        sys.stdout.write(s); sys.stdout.flush()
+    except Exception:
+        pass
+
+def say(msg="", end="\n"):
+    print(msg, end=end, flush=True)
+
+def hyperlink(url, text=None):
+    """Clickable link (OSC 8); terminals without support just show the text."""
+    return f"\x1b]8;;{url}\x1b\\{text or url}\x1b]8;;\x1b\\"
+
+
+def hyperlink_text(link, tail=""):
+    return f"{hyperlink(link)}{tail}" if link else tail
+
+
+atexit.register(tty_restore)
+
+
+# ---------------------------------------------------------------- state / bluez helpers
+def load_state():
+    try:
+        with open(STATE_FILE) as f: return json.load(f)
+    except Exception: return {}
+
+def save_state(**kw):
+    st = load_state(); st.update(kw)
+    try:
+        with open(STATE_FILE, "w") as f: json.dump(st, f)
+    except Exception as e:
+        logging.warning(f"state save failed: {e}")
+
+def dev_path(addr):
+    return ADAPTER + "/dev_" + addr.replace(":", "_")
+
+def trust(bus, path):
+    try:
+        dbus.Interface(bus.get_object("org.bluez", path), "org.freedesktop.DBus.Properties") \
+            .Set("org.bluez.Device1", "Trusted", dbus.Variant(dbus.Boolean(True)))
+    except Exception as e:
+        logging.warning(f"trust failed: {e}")
+
+def bonds(bus):
+    out = []
+    om = dbus.Interface(bus.get_object("org.bluez", "/"), "org.freedesktop.DBus.ObjectManager")
+    for path, ifs in om.GetManagedObjects().items():
+        d = ifs.get("org.bluez.Device1")
+        if d and d.get("Paired", False):
+            addr = str(d.get("Address", "")).upper()
+            out.append({"path": str(path), "addr": addr,
+                        "name": str(d.get("Name", d.get("Alias", addr))),
+                        "link": bool(d.get("Connected", False))})
+    out.sort(key=lambda b: (b["name"].lower(), b["addr"]))
+    return out
+
+def set_prop(bus, name, val):
+    dbus.Interface(bus.get_object("org.bluez", ADAPTER), "org.freedesktop.DBus.Properties") \
+        .Set("org.bluez.Adapter1", name, dbus.Variant(val))
+
+
+class Agent(dbus.service.Object):
+    def __init__(self, bus, path):
+        super().__init__(bus, path); self.bus = bus
+
+    @dbus.service.method("org.bluez.Agent1", in_signature="", out_signature="")
+    def Release(self): pass
+
+    @dbus.service.method("org.bluez.Agent1", in_signature="os", out_signature="")
+    def AuthorizeService(self, device, uuid):
+        trust(self.bus, device)
+
+    @dbus.service.method("org.bluez.Agent1", in_signature="o", out_signature="")
+    def RequestAuthorization(self, device):
+        trust(self.bus, device)
+
+    @dbus.service.method("org.bluez.Agent1", in_signature="o", out_signature="s")
+    def RequestPinCode(self, device): return "0000"
+
+    @dbus.service.method("org.bluez.Agent1", in_signature="o", out_signature="u")
+    def RequestPasskey(self, device): return dbus.UInt32(123456)
+
+    @dbus.service.method("org.bluez.Agent1", in_signature="ouq", out_signature="")
+    def DisplayPasskey(self, device, passkey, entered):
+        logging.info(f"DisplayPasskey {int(passkey):06d}")
+
+    @dbus.service.method("org.bluez.Agent1", in_signature="os", out_signature="")
+    def DisplayPinCode(self, device, pin): logging.info(f"PIN {pin}")
+
+    @dbus.service.method("org.bluez.Agent1", in_signature="ou", out_signature="")
+    def RequestConfirmation(self, device, passkey):
+        logging.info(f"Pairing confirm {int(passkey):06d} from {device} (auto-accepted)")
+        trust(self.bus, device)
+
+    @dbus.service.method("org.bluez.Agent1", in_signature="", out_signature="")
+    def Cancel(self): logging.info("Agent: pairing cancelled")
+
+
+class Profile(dbus.service.Object):
+    @dbus.service.method("org.bluez.Profile1", in_signature="", out_signature="")
+    def Release(self): pass
+
+    @dbus.service.method("org.bluez.Profile1", in_signature="oha{sv}", out_signature="")
+    def NewConnection(self, path, fd, props):
+        try: os.close(fd.take())
+        except Exception: pass
+
+    @dbus.service.method("org.bluez.Profile1", in_signature="o", out_signature="")
+    def RequestDisconnection(self, path): pass
+
+
+class HID:
+    """Tracks control+interrupt L2CAP channels per remote address. Accepts inbound, can dial out."""
+    def __init__(self, on_change):
+        self.conns = {}               # ADDR -> {"ctrl": sock, "intr": sock}
+        self.lock = threading.RLock()
+        self.on_change = on_change
+        self.servers = []
+        for psm, kind in ((PSM_CTRL, "ctrl"), (PSM_INTR, "intr")):
+            s = socket.socket(socket.AF_BLUETOOTH, socket.SOCK_SEQPACKET, socket.BTPROTO_L2CAP)
+            s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            s.bind(("00:00:00:00:00:00", psm))
+            s.listen(2)
+            self.servers.append(s)
+            threading.Thread(target=self._accept, args=(s, kind), daemon=True).start()
+
+    def is_up(self, addr):
+        with self.lock:
+            return bool(addr) and "intr" in self.conns.get(addr.upper(), {})
+
+    def _accept(self, srv, kind):
+        while True:
+            try: conn, addr = srv.accept()
+            except OSError: return
+            self._attach(addr[0].upper(), kind, conn)
+
+    def _attach(self, addr, kind, conn):
+        with self.lock:
+            entry = self.conns.setdefault(addr, {})
+            old = entry.get(kind)
+            entry[kind] = conn
+        if old:
+            self._kill(old)
+        threading.Thread(target=self._drain, args=(addr, kind, conn), daemon=True).start()
+        if kind == "intr":
+            self.on_change(addr, True)
+
+    @staticmethod
+    def _kill(s):
+        try: s.shutdown(socket.SHUT_RDWR)
+        except Exception: pass
+        try: s.close()
+        except Exception: pass
+
+    def _drain(self, addr, kind, conn):
+        while True:
+            try: data = conn.recv(64)
+            except OSError: break
+            if not data: break
+            if kind == "ctrl":
+                t = data[0] >> 4
+                try:
+                    if t in (5, 7, 9): conn.send(b"\x00")
+                    elif t == 6: conn.send(bytes([0xA0, 0x01]))
+                    elif t in (4, 8): conn.send(b"\x03")
+                except OSError: break
+        with self.lock:
+            current = self.conns.get(addr, {}).get(kind) is conn
+        self._kill(conn)
+        if current:
+            self.drop(addr)
+
+    def drop(self, addr):
+        addr = addr.upper()
+        with self.lock:
+            entry = self.conns.pop(addr, None)
+        if not entry: return False
+        for s in entry.values(): self._kill(s)
+        if "intr" in entry: self.on_change(addr, False)
+        return True
+
+    def connect(self, addr, timeout=10):
+        """Dial out to a bonded host. Returns (ok, error)."""
+        addr = addr.upper()
+        if self.is_up(addr): return True, None
+        socks, cur = {}, None
+        try:
+            for kind, psm in (("ctrl", PSM_CTRL), ("intr", PSM_INTR)):
+                cur = socket.socket(socket.AF_BLUETOOTH, socket.SOCK_SEQPACKET, socket.BTPROTO_L2CAP)
+                try: cur.setsockopt(274, 4, struct.pack("BB", 2, 0))   # BT_SECURITY = MEDIUM (encrypted)
+                except OSError: pass
+                cur.settimeout(timeout)
+                cur.connect((addr, psm))
+                cur.settimeout(None)
+                socks[kind] = cur; cur = None
+        except OSError as e:
+            if cur: self._kill(cur)
+            for s in socks.values(): self._kill(s)
+            return False, str(e)
+        self._attach(addr, "ctrl", socks["ctrl"])
+        self._attach(addr, "intr", socks["intr"])
+        return True, None
+
+    def _send(self, addr, payload):
+        with self.lock:
+            s = self.conns.get(addr.upper(), {}).get("intr")
+        if not s: return False
+        try:
+            s.send(payload)
+            return True
+        except OSError as e:
+            say(f"Send failed: {e}"); return False
+
+    def press(self, addr, mod, key):
+        return (self._send(addr, bytes([0xA1, 0x01, mod, 0, key, 0, 0, 0, 0, 0])) and
+                self._send(addr, bytes([0xA1, 0x01, 0, 0, 0, 0, 0, 0, 0, 0])))
+
+    def mouse(self, addr, buttons, dx, dy, wheel):
+        return self._send(addr, bytes([0xA1, 0x02, buttons & 0x07, dx & 0xFF, dy & 0xFF, wheel & 0xFF]))
+
+
+class App:
+    def __init__(self, bus):
+        self.bus = bus
+        st = load_state()
+        self.active = st.get("active")
+        self.solo = st.get("solo", True)       # one phone at a time (frees the other's on-screen keyboard)
+        self.stop = threading.Event()
+        self.last_try = 0.0
+        self.last_hint = 0.0
+        self.pending = b""                     # incomplete escape sequence carried to the next read
+        self.stash = b""                       # bytes typed right after Ctrl+] in the same read (menu input)
+        self.mouse_term = False                # terminal mouse capture (works over SSH)
+        self.mscale = (CELL_W, CELL_H)
+        self.mpos = None
+        self.mbtn = 0
+        self.pads = []                         # server trackpad/mouse sources (evdev)
+        self.ssh = is_ssh()
+        self.pads_auto = MOUSE and "--no-pad" not in sys.argv and (not self.ssh or "--pad" in sys.argv)
+        self.pad_state = None
+        self.web_url = ""                      # set by main() when the web console is up (text shown)
+        self.web_link = ""                     # the bare link inside it
+        self.see_proc = None                   # PBSEE child started by Key (on by default, remembered)
+        self.want_see = bool(st.get("see", True))
+        self.server_name = st.get("name") or DEFAULT_NAME
+        self.see_last = None
+        self.last_see_check = 0.0
+        self.last_scan = 0.0
+        self.term_map = st.get("term_map", True)      # terminal window <-> phone screen (absolute-feel)
+        self.map_gain = float(st.get("map_gain", 1.0))
+        self.gx, self.gy = (st.get("map_cal", {}).get(st.get("active")) or [1.0, 1.0])[:2]   # camera calibration, per device (see calibrate)
+        self.vpos = None                       # where we believe the phone's pointer is (counts); None = unknown
+        self.restart = False
+        self.api_info = ""; self.web_port = 0; self.web_tok = ""; self.relay = None
+        self.kbd = bool(st.get("keyboard", True))
+        self.api_lock = threading.RLock()
+        self.hid = HID(self.on_change)
+
+    # ---------- helpers ----------
+    def name_of(self, addr):
+        try:
+            for b in bonds(self.bus):
+                if b["addr"] == addr: return b["name"]
+        except Exception: pass
+        return addr
+
+    def status(self, b):
+        if self.hid.is_up(b["addr"]): return "● connected"
+        if b["link"]: return "◐ linked (no HID)"
+        return "○ offline"
+
+    def top_lines(self):
+        out = [f"Portabotty {VERSION}: Ctrl+] for menu, then press [key]"]
+        web = self.web_header()
+        if web:
+            link, tail = web
+            host = self.hosting_label()
+            out.append(f"Web: {hyperlink_text(link, tail)}" + (f" | {host}" if host else ""))
+        if self.api_info: out.append(self.api_info)
+        return out
+
+    def show(self):
+        bl = bonds(self.bus)
+        for line in self.top_lines(): say(line)
+        if not bl:
+            say("No bonds.")
+            return bl
+        say(f"\n  {'[1-9]':<6}{'Device':<26}{'Address':<19}Status")
+        for i, b in enumerate(bl, 1):
+            mark = "*" if b["addr"] == self.active else " "
+            say(f"{mark} {i:<5}{b['name'][:24]:<26}{b['addr']:<19}{self.status(b)}")
+        onoff = lambda v: "on" if v else "off"
+        say(f"\n  cam [c] {SEE_DOT[self.see_now()]}" + (" | calibrate [h]" if MOUSE else ""))
+        say(f"\n  keyboard [k] {onoff(self.kbd)} | name [n] {self.server_name} | solo [s] {onoff(self.solo)}")
+        if MOUSE:
+            say(f"  mouse [m] {(('map' if self.term_map else 'relative') + ' [a]') if self.mouse_term else 'off'}"
+                f" | trackpad [t] {onoff(self.pads)}")
+        else:
+            say("  no mouse")
+        say("  pair [p] | drop [d] | forget [f]")
+        say("\n  restart [r] | quit [q]\n")
+        return bl
+
+    def banner(self):
+        if not self.active:
+            say("No target.")
+            return
+        if self.hid.is_up(self.active):
+            say(f"▶ {self.name_of(self.active)} ●")
+        else:
+            say(f"○ {self.name_of(self.active)}")
+
+    def hint(self, msg):
+        now = time.time()
+        if now - self.last_hint > 3:
+            self.last_hint = now; say(msg)
+
+    def read_line(self, fd, prompt, initial=""):
+        """Tiny line editor for the menu: type, Backspace, Enter saves, Esc cancels (None)."""
+        buf = bytearray(initial.encode())
+        def draw(): raw_out("\r\x1b[2K" + prompt + buf.decode("utf-8", "ignore"))
+        draw()
+        while not self.stop.is_set():
+            if self.stash: d, self.stash = self.stash, b""
+            else:
+                d = self.read(fd)
+                if d is None: return None
+            d = re.sub(rb"\x1b\[<[\d;]*[Mm]|\x1b\[\?[\d;]*\$y", b"", d)       # mouse noise
+            for i, ch in enumerate(d):
+                if ch in (10, 13):
+                    self.stash = d[i + 1:]; say(); return buf.decode("utf-8", "ignore").strip()
+                if ch == 27:
+                    say(); return None
+                if ch in (8, 127):
+                    while buf and (buf[-1] & 0xC0) == 0x80: buf.pop()      # a whole UTF-8 character
+                    if buf: buf.pop()
+                elif ch >= 32 and len(buf) < 60:
+                    buf.append(ch)
+            draw()
+        return None
+
+    def set_server_name(self, name):
+        name = " ".join(str(name).split())[:60]
+        if not name: raise ValueError("empty name")
+        set_prop(self.bus, "Alias", dbus.String(name))
+        self.server_name = name; save_state(name=name)
+        return name
+
+    def rename_server(self, fd):
+        name = self.read_line(fd, "Name: ", self.server_name)
+        if not name: say("Cancelled."); return
+        try: say(f"Renamed: {self.set_server_name(name)}")
+        except Exception as e: say(f"error: {e}")
+
+    def pick(self, arg):
+        bl = bonds(self.bus)
+        try:
+            n = int(arg)
+            if n >= 1: return bl[n - 1]
+        except (ValueError, IndexError):
+            pass
+        say("?")
+        return None
+
+    def set_active(self, addr):
+        self.active = addr
+        save_state(active=addr)
+        self.gx, self.gy = (load_state().get("map_cal", {}).get(addr) or [1.0, 1.0])[:2]
+        self.vpos = None
+
+    def bt_disconnect(self, addr):
+        try:
+            dbus.Interface(self.bus.get_object("org.bluez", dev_path(addr)), "org.bluez.Device1").Disconnect()
+        except Exception: pass
+
+    # ---------- events ----------
+    def on_change(self, addr, up):
+        self.vpos = None                       # pointer position on the phone is unknown after any (re)connect
+        say(f"{'●' if up else '○'} {self.name_of(addr)} {'connected' if up else 'disconnected'}")
+        if up and (not self.active or not self.hid.is_up(self.active)):
+            self.set_active(addr)
+
+    # ---------- actions ----------
+    def use(self, b):
+        self.set_active(b["addr"])
+        if self.solo:
+            for a in list(self.hid.conns):
+                if a != b["addr"]:
+                    self.hid.drop(a); self.bt_disconnect(a)
+        if self.hid.is_up(b["addr"]):
+            return
+        say(f"Connecting to {b['name']}...")
+        ok, err = self.hid.connect(b["addr"])
+        if not ok:
+            say(f"Failed: {err}")
+
+    def drop(self, b):
+        was = self.hid.drop(b["addr"]); self.bt_disconnect(b["addr"])
+        say(f"Disconnected {b['name']} (bond kept)." if was else f"{b['name']} wasn't connected.")
+
+    def forget(self, b, fd):
+        say(f"Delete bond for {b['name']}? Press y to confirm: ", end="")
+        k = self.getkey(fd); say()
+        if k != "y":
+            say("Cancelled."); return
+        self.hid.drop(b["addr"])
+        try:
+            dbus.Interface(self.bus.get_object("org.bluez", ADAPTER), "org.bluez.Adapter1").RemoveDevice(b["path"])
+            say("Bond removed.")
+        except Exception as e:
+            say(f"error: {e}")
+        if self.active == b["addr"]:
+            self.active = None; save_state(active=None)
+
+    def pair(self):
+        set_prop(self.bus, "DiscoverableTimeout", dbus.UInt32(120))
+        set_prop(self.bus, "Discoverable", dbus.Boolean(True))
+        say("Visible 120s.")
+
+    def toggle_keyboard(self):
+        self.kbd = not self.kbd; save_state(keyboard=self.kbd)
+        say("Keyboard on" if self.kbd else "Keyboard off")
+
+    def toggle_solo(self):
+        self.solo = not self.solo; save_state(solo=self.solo)
+        say("Solo on" if self.solo else "Solo off")
+
+    # ---------- mouse ----------
+    def set_term_mouse(self, on, quiet=False):
+        if on == self.mouse_term:
+            return
+        self.mouse_term = on
+        self.mpos = None
+        if on:
+            self.mscale = (CELL_W, CELL_H)
+            _MOUSE_REPORTING["on"] = True
+            raw_out(PROBE_1016 + "\x1b[?1003h\x1b[?1006h")     # ask about pixel mode, enable any-motion + SGR
+            if not quiet:
+                say("Mouse on")
+        else:
+            raw_out(MOUSE_OFF_SEQ); _MOUSE_REPORTING["on"] = False
+            if self.mbtn:
+                self.mbtn = 0
+                if self.active and self.hid.is_up(self.active): self.send_mouse(0, 0, 0, 0)
+            if not quiet: say("Mouse off")
+
+    def toggle_pads(self):
+        if self.pads:
+            self.pads_auto = False
+            self.stop_pads(); say("Trackpad off"); return
+        self.pads_auto = True
+        if not self.scan_pads(loud=True):
+            say("No trackpad found")
+
+    def scan_pads(self, loud=False):
+        """Open any trackpad/mouse not yet captured. Returns True if something is captured."""
+        self.pads = [p for p in self.pads if p.is_alive()]
+        try:
+            import evdev
+        except ImportError:
+            self.pad_note("trackpad: needs python3-evdev", loud)
+            return bool(self.pads)
+        have = {p.dev.path for p in self.pads}
+        try:
+            new = open_pointer_devices(evdev, self.pad_emit, skip=have)
+        except Exception as e:
+            self.pad_note(f"trackpad: {e}", loud); return bool(self.pads)
+        self.pads += new
+        if new:
+            self.pad_note("Trackpad on", True)
+        elif not self.pads:
+            self.pad_note("trackpad: none found", loud)
+        return bool(self.pads)
+
+    def pad_note(self, msg, loud):
+        """Print a trackpad status line when it changes (or when asked for with the hotkey)."""
+        if loud or msg != self.pad_state: say(msg)
+        self.pad_state = msg
+
+    def stop_pads(self):
+        for p in self.pads: p.halt.set()
+        for p in self.pads: p.join(1)
+        self.pads = []
+
+    def pad_emit(self, dx, dy, wheel, buttons):
+        if self.active and self.hid.is_up(self.active):
+            self.send_mouse(dx, dy, wheel, buttons)
+
+    def term_has_mouse(self, fd):
+        """Ask the terminal if it reports the mouse (SGR mode). No answer or 'unsupported' = leave it off.
+        Returns (supported, bytes the user typed meanwhile)."""
+        raw_out(PROBE_1006)
+        end, buf = time.time() + 0.4, b""
+        pat = rb"\x1b\[\?1006;(\d)\$y"
+        while time.time() < end:
+            r, _, _ = select.select([fd], [], [], 0.05)
+            if r:
+                try: buf += os.read(fd, 4096)
+                except OSError: break
+                m = re.search(pat, buf)
+                if m: return m.group(1) in (b"1", b"2", b"3"), re.sub(pat, b"", buf)    # 0 unknown, 4 permanently off
+        # no answer at all (e.g. macOS Terminal): trust an xterm-family TERM; a terminal without mouse ignores the request
+        return bool(re.match(r"(xterm|screen|tmux|rxvt|alacritty|kitty|foot|wezterm|ghostty|vte|konsole)", os.environ.get("TERM", ""))), buf
+
+    def term_size(self):
+        try:
+            rows, cols, xp, yp = struct.unpack("HHHH", fcntl.ioctl(sys.stdin.fileno(), termios.TIOCGWINSZ, b"\0" * 8))
+            return max(cols, 1), max(rows, 1), xp, yp
+        except Exception:
+            return 80, 24, 0, 0
+
+    def home(self):
+        """Slam the phone pointer into its top-left corner so we know where it is."""
+        if not (self.active and self.hid.is_up(self.active)): return False
+        self.send_mouse(int(-self.map_w() * 1.3), int(-self.map_h() * 1.3), 0, self.mbtn)
+        self.vpos = [0.0, 0.0]
+        return True
+
+    def map_w(self): return MAP_W * self.map_gain * self.gx
+    def map_h(self): return MAP_H * self.map_gain * self.gy
+
+    def cal_snap(self):
+        """One picture of the phone from the camera linked to the active device. Returns (jpeg bytes, '') or (None, why)."""
+        cam = load_cfg().get("links", {}).get(self.active, "")
+        if not cam: return None, "link a camera to this device in the web console"
+        try:
+            hdr = {"Authorization": "Bearer " + sb_token()} if sb_token() else {}
+            cams = http_json(SB_URL + "/cams", hdr)
+            cams = cams.get("cams", cams) if isinstance(cams, dict) else cams
+            opts = next((c.get("opts", {}) for c in cams if isinstance(c, dict) and c.get("name") == cam), {})
+            if not (opts.get("warp") or opts.get("crop")):
+                return None, "mark the phone's screen in the web console (Calibrate)"
+            req = urllib.request.Request(f"{SB_URL}/snap/{urllib.parse.quote(cam)}.jpg", headers=hdr)
+            with urllib.request.urlopen(req, timeout=20) as r: return r.read(), ""
+        except Exception as e:
+            return None, f"camera unavailable ({e})"
+
+    def cal_cam_opts(self):
+        """(camera name, auth headers, its saved view options) for the camera linked to the active device."""
+        cam = load_cfg().get("links", {}).get(self.active, "")
+        hdr = {"Authorization": "Bearer " + sb_token()} if sb_token() else {}
+        try:
+            cams = http_json(SB_URL + "/cams", hdr)
+            cams = cams.get("cams", cams) if isinstance(cams, dict) else cams
+            return cam, hdr, next((c.get("opts", {}) for c in cams if isinstance(c, dict) and c.get("name") == cam), {})
+        except Exception:
+            return cam, hdr, {}
+
+    def cal_set_tilt(self, deg):
+        cam, hdr, _ = self.cal_cam_opts()
+        req = urllib.request.Request(f"{SB_URL}/save/{urllib.parse.quote(cam)}", method="POST",
+                                     data=json.dumps({"tilt": round(deg, 2)}).encode(),
+                                     headers=dict(hdr, **{"Content-Type": "application/json"}))
+        urllib.request.urlopen(req, timeout=10).read()
+
+    def straighten(self, snap, tilt_get, tilt_set, settle, tries=2):
+        """Slide the pointer along a horizontal line near the top. Any slope in the picture is the camera being crooked:
+        turn the view by that much. Returns degrees applied (0 if already straight), or None if the pointer wasn't seen."""
+        total = 0.0
+        for _ in range(tries):
+            self.vpos = None
+            if not self.home(): return None
+            time.sleep(settle); ref = snap()
+            size = frame_size(ref) if ref else None
+            pts = []
+            for fx in (0.35, 0.85):                       # a line inside the screen, clear of the clipped edge
+                self.goto(fx, 0.2); time.sleep(settle)
+                now = snap(); hit = locate_pointer(ref, now) if now else None
+                if not hit or not size: return None
+                pts.append((hit[0] * size[0], hit[1] * size[1]))
+            ang = math.degrees(math.atan2(pts[1][1] - pts[0][1], pts[1][0] - pts[0][0]))
+            if abs(ang) < 0.6 or abs(ang) > 30: break
+            tilt_set(max(-45.0, min(45.0, tilt_get() + ang))); total += ang
+            time.sleep(settle)
+        return total
+
+    def fit_scale(self, snap, settle, rounds, aim):
+        """Home, aim at (aim, aim), look where the pointer really landed, correct the scale; the last pass only checks.
+        Returns the final miss (fraction of the screen), or None if the pointer wasn't seen."""
+        err = None
+        for i in range(rounds + 1):
+            self.vpos = None
+            if not self.home(): return None
+            time.sleep(settle); ref = snap()
+            self.goto(aim, aim); time.sleep(settle); now = snap()
+            hit = locate_pointer(ref, now) if ref and now else None
+            if not hit: return None
+            ax, ay = hit
+            err = max(abs(ax - aim), abs(ay - aim))
+            if err < 0.03 or i == rounds: break
+            self.gx *= min(3.0, max(0.33, aim / max(ax, 0.05)))
+            self.gy *= min(3.0, max(0.33, aim / max(ay, 0.05)))
+        return err
+
+    def calibrate(self, snap=None, settle=0.6, rounds=4, aim=0.8, tilt_get=None, tilt_set=None):
+        """Camera-assisted: fix the pointer scale, straighten a crooked view, fix the scale again. One line back."""
+        if not (self.active and self.hid.is_up(self.active)): return "No connected phone."
+        if snap is None:
+            pic, why = self.cal_snap()
+            if pic is None:
+                self.home(); return f"Pointer re-homed. For auto-calibration: {why}."
+            snap = lambda: self.cal_snap()[0]
+            tilt_get = lambda: float(self.cal_cam_opts()[2].get("tilt") or 0)
+            tilt_set = self.cal_set_tilt
+        gx0, gy0 = self.gx, self.gy
+        unseen = "Couldn't see the pointer (is AssistiveTouch on, is the view in frame?). Unchanged."
+        err = self.fit_scale(snap, settle, rounds, aim)
+        if err is None:
+            self.gx, self.gy = gx0, gy0; return unseen
+        turned = 0.0
+        if tilt_get and tilt_set:
+            try: turned = self.straighten(snap, tilt_get, tilt_set, settle)
+            except Exception: turned = None
+            if turned is None:
+                self.gx, self.gy = gx0, gy0; return unseen
+            if abs(turned) >= 0.6:
+                err = self.fit_scale(snap, settle, rounds, aim)
+                if err is None:
+                    self.gx, self.gy = gx0, gy0; return unseen
+        self.vpos = None; self.home()
+        cal = dict(load_state().get("map_cal", {})); cal[self.active] = [round(self.gx, 4), round(self.gy, 4)]
+        save_state(map_cal=cal)
+        return (f"Calibrated x{self.gx:.2f} y{self.gy:.2f} (within {max(err, 0.01) * 100:.0f}%)"
+                + (f", straightened {turned:+.1f}°" if abs(turned) >= 0.6 else ""))
+
+    def goto(self, fx, fy, buttons=None):
+        """Move the phone pointer to a fraction (0..1, 0..1) of its screen. Edges overshoot to self-correct drift."""
+        b = self.mbtn if buttons is None else buttons
+        if self.vpos is None and not self.home(): return False
+        W, H = self.map_w(), self.map_h()
+        tx = -0.25 * W if fx <= 0.01 else 1.25 * W if fx >= 0.99 else fx * W
+        ty = -0.25 * H if fy <= 0.01 else 1.25 * H if fy >= 0.99 else fy * H
+        dx, dy = int(round(tx - self.vpos[0])), int(round(ty - self.vpos[1]))
+        self.vpos = [min(max(tx, 0.0), W), min(max(ty, 0.0), H)]
+        if dx or dy or b != self.mbtn:
+            return self.send_mouse(dx, dy, 0, b)
+        return True
+
+    def term_fraction(self, x, y):
+        cols, rows, xp, yp = self.term_size()
+        top = 0
+        if self.mscale == (1, 1) and xp > 0 and yp > 0:
+            rh = yp / max(rows, 1) * top
+            return min(max(x / xp, 0.0), 1.0), min(max((y - rh) / max(yp - rh, 1), 0.0), 1.0)
+        return (min(max((x - 1) / max(cols - 1, 1), 0.0), 1.0),
+                min(max((y - 1 - top) / max(rows - 1 - top, 1), 0.0), 1.0))
+
+    def send_mouse(self, dx, dy, wheel, buttons):
+        a = self.active
+        if not a: return False
+        while True:
+            sx, sy, sw = (max(-127, min(127, v)) for v in (dx, dy, wheel))
+            if not self.hid.mouse(a, buttons, sx, sy, sw): return False
+            dx -= sx; dy -= sy; wheel -= sw
+            if not (dx or dy or wheel): return True
+
+    # ---------- misc ----------
+    def ask_target(self, verb, fd):
+        say(f"{verb} #? ", end="")
+        k = self.getkey(fd); say()
+        if k in ("\r", "\n"):
+            for b in bonds(self.bus):
+                if b["addr"] == self.active: return b
+            say("No active device"); return None
+        if k and k.isdigit():
+            return self.pick(k)
+        say("Cancelled."); return None
+
+    # ---------- see (camera) + web indicators ----------
+    def hosting_text(self):
+        if not self.relay or self.relay.stop_ev.is_set(): return "off"
+        return ("● " if self.relay.ok else "○ ") + re.sub(r"^https?://", "", self.relay.url).rstrip("/")
+
+    def hosting_label(self):
+        ht = self.hosting_text()
+        return "hosted locally | [u] get paid hosting (coming soon)" if ht == "off" else f"hosted {ht} | [u] change"
+
+    def start_hosting(self, url, token):
+        """Dial out to a relay (no inbound port): remembered in portabotty.json. Empty URL turns it off."""
+        if self.relay: self.relay.stop(); self.relay = None
+        cfg = load_cfg()
+        if url and token and self.web_port:
+            self.relay = relay_agent(url, token, self.web_port, self.web_tok)
+            cfg["relay"], cfg["relay_token"] = url, token
+        else:
+            cfg.pop("relay", None); cfg.pop("relay_token", None)
+        save_cfg(cfg)
+        return self.hosting_text()
+
+    def hosting(self, fd):
+        if not self.web_port:
+            say("Hosting needs the web console"); return
+        cfg = load_cfg()
+        url = self.read_line(fd, "Relay URL (empty = off): ", cfg.get("relay", ""))
+        if url is None: say("Cancelled."); return
+        if not url:
+            self.start_hosting("", ""); say("Hosting off"); return
+        tok = self.read_line(fd, "Agent token: ", cfg.get("relay_token", ""))
+        if not tok: say("Cancelled."); return
+        say(f"Hosting {self.start_hosting(url.rstrip('/'), tok)}")
+
+    def web_header(self):
+        """(link, trailing text) for the pinned web row, or None when there is no web console."""
+        if not self.web_url: return None
+        if self.web_link and self.web_url.startswith(self.web_link):
+            return self.web_link, self.web_url[len(self.web_link):]
+        return "", self.web_url
+
+    def web_text(self):
+        if self.web_link and self.web_url.startswith(self.web_link):
+            return hyperlink(self.web_link) + self.web_url[len(self.web_link):]
+        return self.web_url
+
+    def show_web(self):
+        if not self.web_url: say("web off"); return
+        say(self.web_text())
+        if self.web_link and shutil.which("qrencode"):
+            try: say(subprocess.run(["qrencode", "-t", "ANSIUTF8", "-m", "1", self.web_link], capture_output=True, text=True, timeout=3).stdout.rstrip())
+            except Exception: pass
+
+    def see_now(self):
+        return see_state()
+
+    def check_see(self):
+        """Inline indicator: prints a line only when PBSEE changes state (live / idle / stopped)."""
+        st = self.see_now()
+        if self.see_last is not None and st != self.see_last:
+            say(f"cam {SEE_DOT[st]}")
+        self.see_last = st
+
+    def see_running(self):
+        return bool(self.see_proc and self.see_proc.poll() is None)
+
+    def start_see(self, quiet=False):
+        if self.see_running() or port_open(SB_URL):
+            return True                                                # already up (here or in another terminal)
+        cmd = [sys.executable, os.path.abspath(__file__), "see", "serve"]
+        if os.geteuid() == 0 and os.environ.get("SUDO_USER"):
+            cmd = ["sudo", "-u", os.environ["SUDO_USER"]] + cmd       # the camera needs the video group, not root
+        self.see_proc = subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                                         stderr=subprocess.DEVNULL, start_new_session=True)
+        quiet or say("Cam starting")
+        return True
+
+    def stop_see(self, quiet=False):
+        if self.see_running():
+            self.see_proc.terminate()
+            try: self.see_proc.wait(3)
+            except Exception: pass
+        self.see_proc = None
+        quiet or say("Cam off")
+
+    def set_see(self, on, quiet=True):
+        """Remembered across runs (default on). Returns the new wanted state."""
+        self.want_see = bool(on); save_state(see=self.want_see)
+        if self.want_see: self.start_see(quiet)
+        else:
+            if port_open(SB_URL) and not self.see_running():
+                quiet or say("Cam is running in another terminal")
+            self.stop_see(quiet)
+        return self.want_see
+
+    def toggle_see(self):
+        self.set_see(not (self.want_see and (self.see_running() or port_open(SB_URL))), quiet=False)
+
+    def shutdown(self, bye="Disconnected from all devices. Bye."):
+        self.stop_see(quiet=True)
+        self.set_term_mouse(False, quiet=True)
+        self.stop_pads()
+        for addr in list(self.hid.conns):
+            self.hid.drop(addr); self.bt_disconnect(addr)
+        say(bye)
+        self.stop.set()
+
+    def ensure_target(self):
+        if not self.active:
+            self.hint("No target. Ctrl+] then a number picks one.")
+            return False
+        if self.hid.is_up(self.active):
+            return True
+        now = time.time()
+        if now - self.last_try < 10:
+            self.hint(f"{self.name_of(self.active)} is offline. Ctrl+] for the menu.")
+            return False
+        self.last_try = now
+        say(f"Reconnecting to {self.name_of(self.active)}...")
+        ok, err = self.hid.connect(self.active, timeout=5)
+        if not ok:
+            say(f"Not reachable ({err}).")
+        return ok
+
+    def auto_reconnect(self):
+        if self.hid.is_up(self.active): return
+        say(f"Auto-reconnecting to {self.name_of(self.active)}...")
+        ok, err = self.hid.connect(self.active, timeout=8)
+        if not ok:
+            say(f"  not reachable ({err})")
+
+    # ---------- agent API ----------
+    def find_bond(self, ref):
+        bl = bonds(self.bus)
+        if isinstance(ref, int) or str(ref).isdigit():
+            n = int(ref)
+            if 1 <= n <= len(bl): return bl[n - 1]
+        for b in bl:
+            if str(ref).upper() == b["addr"] or str(ref).lower() in b["name"].lower(): return b
+        raise ApiError(f"no such device '{ref}' (see GET /status)", 404)
+
+    def snapshot(self):
+        devs = []
+        for i, b in enumerate(bonds(self.bus), 1):
+            devs.append({"n": i, "name": b["name"], "addr": b["addr"], "active": b["addr"] == self.active,
+                         "connected": self.hid.is_up(b["addr"])})
+        return {"active": self.active, "solo": self.solo, "name": self.server_name, "devices": devs, "mouse_enabled": MOUSE,
+                "terminal_mouse": self.mouse_term, "terminal_map": self.term_map, "trackpad": bool(self.pads),
+                "pointer": None if self.vpos is None else
+                [round(self.vpos[0] / self.map_w(), 3), round(self.vpos[1] / self.map_h(), 3)]}
+
+    def need_target(self):
+        if not self.ensure_target():
+            raise ApiError("no connected target phone (POST /use first)", 409)
+
+    def need_mouse(self):
+        if not MOUSE: raise ApiError("started with --no-mouse", 409)
+        self.need_target()
+
+    @staticmethod
+    def frac(body, k):
+        v = float(body[k])
+        if not 0.0 <= v <= 1.0: raise ApiError(f"'{k}' must be 0..1 (fraction of the phone screen)")
+        return v
+
+    @staticmethod
+    def button_bit(body):
+        try: return {"left": 1, "right": 2, "middle": 4}[str(body.get("button", "left")).lower()]
+        except KeyError: raise ApiError("button must be left, right or middle")
+
+    def api(self, method, path, body):
+        if method == "GET" and path in ("/", "/status"):
+            return self.snapshot()
+        if method != "POST": raise ApiError("not found", 404)
+        if path == "/type":
+            text = str(body.get("text", ""))
+            self.need_target()
+            keys = [e for e in parse_input("".join(c for c in text if c in "\n\t" or 32 <= ord(c) < 127).encode())[0] if e[0] == "key"]
+            skipped = sum(1 for c in text if not (c in "\n\t" or 32 <= ord(c) < 127))
+            if body.get("submit"): keys.append(("key", 0, K_ENTER))
+            for _, m, k in keys:
+                if not self.hid.press(self.active, m, k): raise ApiError("send failed (phone went away?)", 409)
+                time.sleep(float(body.get("delay", 0.008)))
+            return {"typed": len(keys), "skipped_non_ascii": skipped}
+        if path == "/key":
+            combos = body.get("keys") or [body["key"]]
+            parsed = []
+            for c in combos:
+                try: parsed.append(parse_combo(c))
+                except ValueError as e: raise ApiError(str(e))
+            self.need_target()
+            for m, k in parsed:
+                if not self.hid.press(self.active, m, k): raise ApiError("send failed (phone went away?)", 409)
+                time.sleep(0.04)
+            return {"sent": combos}
+        if path == "/use":
+            b = self.find_bond(body["device"])
+            self.use(b)
+            if not self.hid.is_up(b["addr"]): raise ApiError(f"could not connect to {b['name']}", 409)
+            return self.snapshot()
+        if path == "/drop":
+            self.drop(self.find_bond(body.get("device", self.active)))
+            return self.snapshot()
+        if path == "/rename":
+            try: return {"server": self.set_server_name(body.get("server", ""))}
+            except ValueError as e: raise ApiError(str(e))
+        if path == "/solo":
+            if bool(body["on"]) != self.solo: self.toggle_solo()
+            return self.snapshot()
+        if path == "/mouse":
+            if "terminal" in body: self.set_term_mouse(bool(body["terminal"]), quiet=True)
+            if "map" in body: self.term_map = bool(body["map"]); save_state(term_map=self.term_map)
+            if "trackpad" in body:
+                if bool(body["trackpad"]) != bool(self.pads): self.toggle_pads()
+            return self.snapshot()
+        # ---- pointer actions
+        self.need_mouse()
+        if path == "/home":
+            self.home(); return {"pointer": [0, 0]}
+        if path == "/move":
+            dx, dy = int(body.get("dx", 0)), int(body.get("dy", 0))
+            self.send_mouse(dx, dy, 0, self.mbtn)
+            if self.vpos is not None:
+                self.vpos = [min(max(self.vpos[0] + dx, 0.0), self.map_w()),
+                             min(max(self.vpos[1] + dy, 0.0), self.map_h())]
+            return {}
+        if path == "/goto":
+            self.goto(self.frac(body, "x"), self.frac(body, "y")); return {"pointer": [body["x"], body["y"]]}
+        if path == "/click":
+            bit = self.button_bit(body)
+            if "x" in body and "y" in body: self.goto(self.frac(body, "x"), self.frac(body, "y"), 0)
+            for _ in range(2 if body.get("double") else 1):
+                self.send_mouse(0, 0, 0, bit); time.sleep(float(body.get("hold", 0.05)))
+                self.send_mouse(0, 0, 0, 0); time.sleep(0.06)
+            return {"clicked": body.get("button", "left"), "double": bool(body.get("double"))}
+        if path == "/scroll":
+            n = int(body.get("amount", 3)); d = str(body.get("dir", "down")).lower()
+            if d not in ("up", "down"): raise ApiError("dir must be up or down")
+            if "x" in body and "y" in body: self.goto(self.frac(body, "x"), self.frac(body, "y"), 0)
+            self.send_mouse(0, 0, n if d == "up" else -n, 0)
+            return {"scrolled": d, "amount": n}
+        if path == "/drag":
+            bit = self.button_bit(body)
+            x1, y1, x2, y2 = (self.frac(body, k) for k in ("x1", "y1", "x2", "y2"))
+            steps = max(2, int(body.get("steps", 12))); dur = float(body.get("duration", 0.4))
+            self.goto(x1, y1, 0); time.sleep(0.05)
+            self.send_mouse(0, 0, 0, bit); time.sleep(0.08)
+            for i in range(1, steps + 1):
+                self.goto(x1 + (x2 - x1) * i / steps, y1 + (y2 - y1) * i / steps, bit)
+                time.sleep(dur / steps)
+            self.send_mouse(0, 0, 0, 0)
+            return {"dragged": [x1, y1, x2, y2]}
+        raise ApiError("not found", 404)
+
+    # ---------- input ----------
+    def read(self, fd, timeout=0.2):
+        r, _, _ = select.select([fd], [], [], timeout)
+        if not r: return b""
+        d = os.read(fd, 4096)
+        return d if d else None
+
+    def getkey(self, fd):
+        while not self.stop.is_set():
+            if self.stash:
+                d, self.stash = self.stash, b""
+            else:
+                d = self.read(fd)
+                if d is None: return None
+            d = re.sub(rb"\x1b\[<[\d;]*[Mm]|\x1b\[\?[\d;]*\$y", b"", d)   # ignore mouse noise while a menu waits
+            if d:
+                self.stash = d[1:]
+                return chr(d[0]) if d[0] < 0x80 else "?"
+        return None
+
+    def menu(self, fd):
+        k = self.getkey(fd)
+        if k is None: return
+        if k in ("\r", "\n", " ", "?"):
+            self.show(); return
+        if k.isdigit() and k != "0":
+            b = self.pick(k)
+            if b: self.use(b)
+        elif k == "p": self.pair()
+        elif k == "s": self.toggle_solo()
+        elif k == "m":
+            if MOUSE: self.set_term_mouse(not self.mouse_term)
+            else: say("keyboard-only")
+        elif k == "t":
+            if MOUSE: self.toggle_pads()
+            else: say("keyboard-only")
+        elif k == "a":
+            self.term_map = not self.term_map; save_state(term_map=self.term_map); self.mpos = None
+            say("Mouse: map" if self.term_map else "Mouse: relative")
+        elif k == "h":
+            say("Calibrating..."); say(self.calibrate())
+        elif k in "+=-_":
+            self.map_gain = min(3.0, max(0.3, self.map_gain * (1.1 if k in "+=" else 1 / 1.1)))
+            save_state(map_gain=round(self.map_gain, 3)); self.vpos = None
+            say(f"Map x{self.map_gain:.2f}")
+        elif k == "c": self.toggle_see()
+        elif k == "n": self.rename_server(fd)
+        elif k == "k": self.toggle_keyboard()
+        elif k == "u": self.hosting(fd)
+        elif k == "d":
+            b = self.ask_target("Drop", fd)
+            if b: self.drop(b)
+        elif k == "f":
+            b = self.ask_target("Forget", fd)
+            if b: self.forget(b, fd)
+        elif k == "r":
+            self.restart = True; self.shutdown(bye="Restarting (Bluetooth too)."); return
+        elif k == "q":
+            self.shutdown(); return
+        self.banner()
+
+    def handle(self, fd, data):
+        # Split at the menu hotkey so a fast "Ctrl+] 2" (same read) still reaches the menu.
+        head, sep, tail = (self.pending + data).partition(bytes([MENU_KEY]))
+        events, self.pending = parse_input(head)
+        if sep: self.pending = b""
+        skipped = 0
+        mdx = mdy = wheel = 0
+
+        def flush():
+            nonlocal mdx, mdy, wheel
+            if mdx or mdy or wheel:
+                self.send_mouse(mdx, mdy, wheel, self.mbtn)
+            mdx = mdy = wheel = 0
+
+        for ev in events:
+            kind = ev[0]
+            if kind == "skip":
+                skipped += 1; continue
+            if kind == "mode":                                   # terminal says it can report pixels
+                if ev[1] == 1016 and ev[2] in (1, 2, 3) and self.mouse_term and self.term_size()[2] > 0:
+                    self.mscale = (1, 1); raw_out("\x1b[?1016h")
+                continue
+            if kind != "mouse" and not self.kbd:                 # keyboard off: keys stay local, mouse still works
+                continue
+            if not self.ensure_target():
+                if not sep: termios.tcflush(fd, termios.TCIFLUSH)
+                self.pending = b""
+                break
+            if kind == "mouse":
+                _, cb, x, y, pressed = ev
+                if cb & 64:                                      # wheel: 64 = up, 65 = down
+                    wheel += 1 if (cb & 3) == 0 else -1
+                    continue
+                bit = {0: 1, 1: 4, 2: 2}.get(cb & 3)             # left, middle, right -> HID bits
+                newb = self.mbtn
+                if bit and not (cb & 32):
+                    newb = (self.mbtn | bit) if pressed else (self.mbtn & ~bit)
+                if self.term_map:                                # window position == phone screen position
+                    flush()
+                    fx, fy = self.term_fraction(x, y)
+                    self.goto(fx, fy, self.mbtn)
+                    if newb != self.mbtn:
+                        self.mbtn = newb
+                        self.send_mouse(0, 0, 0, self.mbtn)
+                    continue
+                if self.mpos is not None:
+                    mdx += (x - self.mpos[0]) * self.mscale[0]
+                    mdy += (y - self.mpos[1]) * self.mscale[1]
+                self.mpos = (x, y)
+                if newb != self.mbtn:
+                    flush()
+                    self.mbtn = newb
+                    self.send_mouse(0, 0, 0, self.mbtn)
+                continue
+            flush()                                              # a key: send pending motion first
+            if not self.hid.press(self.active, ev[1], ev[2]):
+                break
+            time.sleep(0.004)
+        flush()
+        if skipped:
+            say(f"(skipped {skipped} non-ASCII character(s))")
+        if sep:                                                  # the menu is always reachable
+            self.stash = tail
+            self.menu(fd)
+            self.stash = b""
+            termios.tcflush(fd, termios.TCIFLUSH)
+
+    def console(self):
+        fd = sys.stdin.fileno()
+        time.sleep(0.5)
+        cols, rows = self.term_size()[:2]
+        bl = self.show()
+        if "--qr" in sys.argv: self.show_web()
+        if bl and self.active not in [b["addr"] for b in bl]:
+            self.set_active(bl[0]["addr"])
+        tty_raw(fd)
+        try:
+            if self.active: self.auto_reconnect()
+            termios.tcflush(fd, termios.TCIFLUSH)
+            self.banner()
+            if self.want_see: self.start_see(quiet=True)
+            if MOUSE:
+                if "--no-term-mouse" not in sys.argv:
+                    has, typed = self.term_has_mouse(fd)
+                    if has:
+                        self.set_term_mouse(True, quiet=True)
+                        say("Mouse on")
+                    if typed: self.handle(fd, typed)                  # keys typed while we were asking
+                if self.pads_auto: self.scan_pads()
+            while not self.stop.is_set():
+                data = self.read(fd)
+                if data is None: break
+                if data: self.handle(fd, data)
+                if self.pads_auto and time.time() - self.last_scan > PAD_RESCAN:
+                    self.last_scan = time.time(); self.scan_pads()
+                if time.time() - self.last_see_check > 2:
+                    self.last_see_check = time.time(); self.check_see()
+
+        except Exception as e:
+            say(f"console error: {e}")
+        finally:
+            self.set_term_mouse(False, quiet=True)
+            self.stop_pads()
+            tty_restore()
+            self.stop.set()
+
+    def headless(self):
+        time.sleep(0.5)
+        if self.want_see: self.start_see(quiet=True)
+        if self.active: self.auto_reconnect()
+
+# ---------------------------------------------------------------- local HTTP API (for agents / MCP)
+def load_token():
+    """One token, created on first run, readable only by the user who started sudo."""
+    try:
+        return open(TOKEN_FILE).read().strip()
+    except OSError:
+        pass
+    tok = secrets.token_urlsafe(24)
+    fd = os.open(TOKEN_FILE, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w") as f: f.write(tok)
+    uid, gid = os.environ.get("SUDO_UID"), os.environ.get("SUDO_GID")
+    if uid:
+        try: os.chown(TOKEN_FILE, int(uid), int(gid or uid))
+        except OSError: pass
+    return tok
+
+
+class ApiError(Exception):
+    def __init__(self, msg, code=400): super().__init__(msg); self.code = code
+
+
+def make_api(app, token, host, port):
+    class H(BaseHTTPRequestHandler):
+        def log_message(self, *a): pass
+
+        def _out(self, code, obj):
+            body = json.dumps(obj).encode()
+            self.send_response(code)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers(); self.wfile.write(body)
+
+        def _auth(self):
+            given = self.headers.get("Authorization", "").replace("Bearer ", "") or self.headers.get("X-Pb-Token", "")
+            return hmac.compare_digest(given, token)
+
+        def _run(self, method):
+            if not self._auth(): return self._out(401, {"ok": False, "error": "token required (Authorization: Bearer <token>)"})
+            path = self.path.split("?")[0].rstrip("/") or "/"
+            try:
+                body = {}
+                if method == "POST":
+                    n = int(self.headers.get("Content-Length") or 0)
+                    if n > 100_000: raise ApiError("body too large")
+                    body = json.loads(self.rfile.read(n) or b"{}")
+                    if not isinstance(body, dict): raise ApiError("JSON object expected")
+                with app.api_lock:
+                    res = app.api(method, path, body)
+                self._out(200, dict(res, ok=True))
+            except ApiError as e:
+                self._out(e.code, {"ok": False, "error": str(e)})
+            except (ValueError, KeyError, TypeError) as e:
+                self._out(400, {"ok": False, "error": f"bad request: {e}"})
+            except Exception as e:
+                self._out(500, {"ok": False, "error": f"{type(e).__name__}: {e}"})
+
+        def do_GET(self): self._run("GET")
+        def do_POST(self): self._run("POST")
+
+    srv = ThreadingHTTPServer((host, port), H)
+    srv.daemon_threads = True
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    return srv
+
+
+def locate_pointer(ref, img, min_peak=9):
+    """Where did the pointer appear between two pictures of the phone screen? (x, y) as fractions, or None.
+    `ref` has it parked in the top-left corner, so of the two changed spots (gone / arrived) the one farther from
+    that corner is the new position. A change in overall brightness is ignored."""
+    try:
+        from PIL import Image, ImageFilter
+        import numpy as np, io
+        a = Image.open(io.BytesIO(ref)).convert("L")
+        size = (200, max(1, round(200 * a.height / a.width)))
+        def prep(im):
+            return np.asarray(im.convert("L").resize(size).filter(ImageFilter.GaussianBlur(2)), dtype=float)
+        pa, pb = prep(a), prep(Image.open(io.BytesIO(img)))
+        d = pb - pa
+        d = np.abs(d - np.median(d))
+        h, w = d.shape
+        yy, xx = np.mgrid[0:h, 0:w]
+        def blob(dd):
+            peak = dd.max()
+            if peak < min_peak: return None, 0.0, dd
+            py, px = np.unravel_index(int(dd.argmax()), dd.shape)
+            near = (xx - px) ** 2 + (yy - py) ** 2 < (0.12 * w) ** 2
+            sel = near & (dd >= peak * 0.5)
+            ys, xs = np.nonzero(sel)
+            cx, cy = (xs.mean() + 0.5) / w, (ys.mean() + 0.5) / h
+            return (float(cx), float(cy)), float(peak), np.where((xx - px) ** 2 + (yy - py) ** 2 < (0.16 * w) ** 2, 0, dd)
+        b1, p1, rest = blob(d)
+        if b1 is None: return None
+        found = [b1]
+        b2, p2, _ = blob(rest)
+        if b2 is not None and p2 >= 0.35 * p1: found.append(b2)
+        best = max(found, key=lambda t: t[0] ** 2 + t[1] ** 2)
+        return best if best[0] ** 2 + best[1] ** 2 > 0.18 ** 2 else None
+    except Exception:
+        return None
+
+
+def frame_size(jpeg):
+    try:
+        from PIL import Image
+        import io
+        return Image.open(io.BytesIO(jpeg)).size
+    except Exception:
+        return None
+
+
+DEFAULT_NAME = "BTE Keyboard"
+
+
+def server_name_for(saved, host=None):
+    """The Bluetooth name phones see: whatever you set, else BTE Keyboard. A saved name is never changed."""
+    return saved or DEFAULT_NAME
+
+
+def reap_stale(wait=3.0):
+    """Stop any other running kb-mode Key (a hung one keeps the Bluetooth HID profile registered).
+    Never touches us, our parents, or a see/mcp/web-mode process of this same file."""
+    mine = set()
+    pid = os.getpid()
+    while pid > 1:                                   # us + sudo/shell parents
+        mine.add(pid)
+        try:
+            with open(f"/proc/{pid}/stat") as f: pid = int(f.read().rsplit(")", 1)[1].split()[1])
+        except (OSError, ValueError, IndexError): break
+    def is_key(p):
+        try:
+            with open(f"/proc/{p}/cmdline", "rb") as f: argv = f.read().split(b"\0")
+        except OSError: return False
+        if not (os.path.basename(argv[0]).startswith(b"python") and len(argv) > 1 and argv[1].endswith(b"portabotty.py")):
+            return False
+        mode = argv[2] if len(argv) > 2 else b""
+        return mode not in (b"see", b"cam", b"mcp", b"web")
+    def others():
+        r = subprocess.run(["pgrep", "-f", r"[p]ortabotty\.py"], capture_output=True, text=True)
+        return [int(p) for p in r.stdout.split() if int(p) not in mine and is_key(int(p))]
+    pids = others()
+    for p in pids:
+        try: os.kill(p, signal.SIGTERM)
+        except OSError: pass
+    end = time.time() + wait
+    while pids and time.time() < end:
+        time.sleep(0.2); pids = others()
+    for p in pids:
+        try: os.kill(p, signal.SIGKILL)
+        except OSError: pass
+    if pids: time.sleep(0.5)
+    return len(pids)
+
+
+def install_launcher():
+    """pb, pbk, pbkb (kb mode, root) and pbs, pbc (see mode, normal user) - all five pointed at this one file."""
+    me = os.path.abspath(__file__)
+    sudo = [] if os.geteuid() == 0 else ["sudo"]
+    kb_script = ('#!/bin/sh\n# Portabotty (keyboard) launcher, created by --install. Works in any shell, local or SSH.\n'
+                 f'sudo pkill -f "python.* [p]ortabotty\\.py kb" 2>/dev/null; sleep 1; sudo pkill -9 -f "python.* [p]ortabotty\\.py kb" 2>/dev/null\n'
+                 f'exec sudo {sys.executable} "{me}" kb "$@"\n')
+    see_script = (f'#!/bin/sh\n# Portabotty (camera) launcher, created by --install.\n'
+                  f'[ $# -eq 0 ] && set -- run\nexec {sys.executable} "{me}" see "$@"\n')
+    for name, script in (("pb", kb_script), ("pbk", kb_script), ("pbkb", kb_script), ("pbs", see_script), ("pbc", see_script)):
+        subprocess.run(sudo + ["tee", f"/usr/local/bin/{name}"], input=script, text=True, stdout=subprocess.DEVNULL, check=True)
+        subprocess.run(sudo + ["chmod", "755", f"/usr/local/bin/{name}"], check=True)
+    print("Installed pb, pbk, pbkb, pbs, pbc (run from any shell, console or SSH).")
+
+
+def main_kb():
+    if "--pads" in sys.argv:
+        return pad_diagnose()
+    dbus.mainloop.glib.DBusGMainLoop(set_as_default=True)
+    dbus.mainloop.glib.threads_init()
+    reap_stale()
+    bus = dbus.SystemBus()
+    name = server_name_for(load_state().get("name"), socket.gethostname())
+
+    r = subprocess.run(["btmgmt", "class", "5", str(DEV_SUBCLASS)], capture_output=True, text=True)
+    logging.info(f"btmgmt class: {(r.stdout or r.stderr).strip()[:120]}")
+
+    have_bonds = bool(bonds(bus))
+    for k, v in (("Powered", dbus.Boolean(True)), ("Alias", dbus.String(name)),
+                 ("Pairable", dbus.Boolean(True)), ("PairableTimeout", dbus.UInt32(0)),
+                 ("DiscoverableTimeout", dbus.UInt32(0 if not have_bonds else 120)),
+                 ("Discoverable", dbus.Boolean(not have_bonds))):
+        set_prop(bus, k, v)
+
+    agent_manager = dbus.Interface(bus.get_object("org.bluez", "/org/bluez"), "org.bluez.AgentManager1")
+    agent = Agent(bus, "/pbkey/agent")
+    agent_manager.RegisterAgent("/pbkey/agent", "NoInputNoOutput")
+    agent_manager.RequestDefaultAgent("/pbkey/agent")
+
+    pm = dbus.Interface(bus.get_object("org.bluez", "/org/bluez"), "org.bluez.ProfileManager1")
+    prof = Profile(bus, "/pbkey/hid")
+    try:
+        pm.RegisterProfile("/pbkey/hid", HID_UUID, {
+            "Name": "Portabotty Keyboard", "Role": "server",
+            "RequireAuthentication": dbus.Boolean(False), "RequireAuthorization": dbus.Boolean(False),
+            "ServiceRecord": SDP_RECORD})
+    except dbus.exceptions.DBusException as e:
+        if "already registered" in str(e) and not os.environ.get("PBKEY_RETRIED"):
+            # something still holds the HID profile: stop it, restart Bluetooth, start over once
+            reap_stale()
+            try: subprocess.run(["systemctl", "restart", "bluetooth"], timeout=30, capture_output=True)
+            except Exception: pass
+            time.sleep(2)
+            os.environ["PBKEY_RETRIED"] = "1"
+            os.execv(sys.executable, [sys.executable] + sys.argv)
+        sys.exit(f"Bluetooth won't take the HID profile ({e}). Try: sudo systemctl restart bluetooth")
+    os.environ.pop("PBKEY_RETRIED", None)
+
+    app = App(bus)
+    app.server_name = name
+    api_srv = web_srv = None
+    if "--no-api" not in sys.argv:
+        host, port = argval("--api-listen", "127.0.0.1"), int(argval("--api-port", KB_PORT))
+        tok = load_token()
+        try:
+            api_srv = make_api(app, tok, host, port)
+            app.api_info = f"API: http://{host}:{port} | Token file: {TOKEN_FILE}"
+            logging.info(app.api_info)
+        except OSError as e:
+            logging.warning(f"API not started: {e}")
+        if "--no-web" in sys.argv: pass
+        elif not api_srv: app.web_url = "off (key API busy: another pbk running? sudo pkill -f '[p]ortabotty\\.py kb')"
+        else:
+            global KB_URL
+            wl, wp = argval("--web-listen", "0.0.0.0"), int(argval("--web-port", DB_PORT))
+            os.environ["PBKEY_TOKEN"] = tok; KB_URL = f"http://127.0.0.1:{port}"
+            try:
+                wtok = web_token(wl, argval("--web-token", ""))
+                web_srv = start_gateway(wl, wp, wtok)
+                app.web_link = app.web_url = web_url(wl, wp, wtok)
+                SEE["state"] = lambda: app.want_see
+                SEE["set"] = app.set_see
+                fw = firewall_hint(wp) if wl == "0.0.0.0" else ""
+                if fw: app.web_url += f"   (ufw blocks LAN: {fw})"
+                cfg = load_cfg()
+                ru, rt = argval("--relay", cfg.get("relay", "")), argval("--relay-token", cfg.get("relay_token", ""))
+                app.web_port, app.web_tok = wp, wtok
+                if ru and rt: app.start_hosting(ru.rstrip("/"), rt)
+            except OSError as e:
+                app.web_url = f"off ({e.strerror or e}: port {wp} busy? sudo pkill -f '[p]ortabotty\\.py kb')"
+    loop = GLib.MainLoop()
+    for sig in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
+        signal.signal(sig, lambda *a: app.stop.set())
+    GLib.timeout_add(200, lambda: (loop.quit(), False)[1] if app.stop.is_set() else True)
+    target = app.console if sys.stdin.isatty() else app.headless
+    threading.Thread(target=target, daemon=True).start()
+    try:
+        loop.run()
+    finally:
+        tty_restore()
+        app.stop_pads()
+        app.stop_see(quiet=True)
+        if api_srv: api_srv.shutdown()
+        if web_srv: web_srv.shutdown()
+        for a in list(app.hid.conns): app.hid.drop(a)
+        for s in app.hid.servers: s.close()
+        try: pm.UnregisterProfile("/pbkey/hid")
+        except Exception: pass
+        try: agent_manager.UnregisterAgent("/pbkey/agent")
+        except Exception: pass
+        if app.restart:
+            try: subprocess.run(["systemctl", "restart", "bluetooth"], timeout=30, capture_output=True)
+            except Exception: pass
+            time.sleep(2)
+            os.execv(sys.executable, [sys.executable] + sys.argv)
+
+
+# ======================================================================
+# Web gateway: console UI + MCP-over-HTTP, proxies to kb/see (was portabotty.py)
+# ======================================================================
+
 KB_URL = os.environ.get("PBKEY_URL", f"http://127.0.0.1:{KB_PORT}").rstrip("/")
 SB_URL = os.environ.get("PBSEE_URL", f"http://127.0.0.1:{SB_PORT}").rstrip("/")
-CONFIG = os.environ.get("PORTABOTTY_CONFIG", os.path.join(HERE, "portabotty.json"))
+WEB_CONFIG = os.environ.get("PORTABOTTY_CONFIG", os.path.join(HERE, "portabotty.json"))
 KB_PATHS = {"status", "use", "drop", "solo", "rename", "mouse", "type", "key", "goto", "click", "scroll", "drag", "move", "home"}
 INPUT_PATHS = {"type", "key", "goto", "click", "scroll", "drag", "move", "home"}      # blocked on the web console while view-only
 SB_GET = {"cams", "status", "stream", "snap"}
 SB_POST = {"calibrate", "save", "focus"}
-SEE = {}          # set by PBKEY: {"state": () -> bool, "set": (bool) -> bool}  (camera server on/off)
-
-
-WHICH = {"k": "kb", "key": "kb", "kb": "kb", "pbk": "kb", "pbkb": "kb",
-         "s": "sb", "see": "sb", "sb": "sb", "pbs": "sb", "c": "sb", "cam": "sb", "pbc": "sb"}
+SEE = {}          # set by main_kb: {"state": () -> bool, "set": (bool) -> bool}  (camera server on/off)
 
 
 # ---------------------------------------------------------------- config / tokens
 def load_cfg():
     try:
-        with open(CONFIG) as f: return json.load(f)
+        with open(WEB_CONFIG) as f: return json.load(f)
     except (OSError, ValueError):
         return {}
 
 
 def save_cfg(cfg):
-    fd = os.open(CONFIG, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    fd = os.open(WEB_CONFIG, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     with os.fdopen(fd, "w") as f: json.dump(cfg, f, indent=1)
     uid = os.environ.get("SUDO_UID")                       # written under sudo: keep it readable by you
     if uid:
-        try: os.chown(CONFIG, int(uid), int(os.environ.get("SUDO_GID", uid)))
+        try: os.chown(WEB_CONFIG, int(uid), int(os.environ.get("SUDO_GID", uid)))
         except OSError: pass
 
 
@@ -457,7 +2255,7 @@ def locked_out(ip, limit=8, window=60):
     return len(FAILS[ip]) >= limit
 
 
-class Handler(BaseHTTPRequestHandler):
+class WebHandler(BaseHTTPRequestHandler):
     server_version = "portabotty"
     def log_message(self, *a): pass
 
@@ -515,10 +2313,8 @@ class Handler(BaseHTTPRequestHandler):
             m = json.loads(self._body())
         except ValueError:
             return self._json({"jsonrpc": "2.0", "id": None, "error": {"code": -32700, "message": "parse error"}}, 400)
-        import pbmcp as mcp
-        mcp.KB_URL, mcp.CV_URL, mcp.CV_TOKEN = KB_URL, SB_URL, sb_token()
         msgs = m if isinstance(m, list) else [m]
-        out = [r for r in (mcp.handle(x) for x in msgs if isinstance(x, dict)) if r is not None]
+        out = [r for r in (handle(x) for x in msgs if isinstance(x, dict)) if r is not None]
         if not out: return self._send(202, b"", "application/json")
         self._json(out if isinstance(m, list) else out[0])
 
@@ -576,7 +2372,7 @@ class Handler(BaseHTTPRequestHandler):
 
 def start_gateway(listen, port, token):
     Gateway.token = token
-    srv = ThreadingHTTPServer((listen, port), Handler); srv.daemon_threads = True
+    srv = ThreadingHTTPServer((listen, port), WebHandler); srv.daemon_threads = True
     threading.Thread(target=srv.serve_forever, daemon=True).start()
     return srv
 
@@ -680,11 +2476,18 @@ def relay_agent(url, agent_token, port, local_token=""):
     return handle
 
 
-def main():
-    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+WEB_DOC = """Portabotty web gateway (mode 'web'): the web console (live image, trackpad, keyboard) and MCP over HTTP,
+in front of kb and see mode. Normally started by kb mode in-process. Standalone, against kb/see running elsewhere:
+  python3 portabotty.py web [--listen ADDR] [--port N] [--token T]
+Details: README.md
+"""
+
+
+def main_web(args=None):
+    ap = argparse.ArgumentParser(description=WEB_DOC, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--listen"); ap.add_argument("--port", type=int); ap.add_argument("--token")
     ap.add_argument("--relay"); ap.add_argument("--relay-token")
-    a = ap.parse_args()
+    a = ap.parse_args(args)
     cfg = load_cfg()
     listen = a.listen or cfg.get("listen", "0.0.0.0")
     port = a.port or int(cfg.get("port", DB_PORT))
@@ -702,6 +2505,1094 @@ def main():
         while True: time.sleep(3600)
     except KeyboardInterrupt:
         pass
+
+
+# ======================================================================
+# Camera server: ffmpeg capture + HTTP (was pbsee.py)
+# ======================================================================
+SYSFS = os.environ.get("PBSEE_SYSFS", "/sys")
+DEVFS = os.environ.get("PBSEE_DEVFS", "/dev")
+SEE_CONFIG = os.environ.get("PBSEE_CONFIG", os.path.join(HERE, "pbsee.json"))
+IDLE_STOP = float(os.environ.get("PBSEE_IDLE", "10"))     # seconds without viewers before a camera stops
+FOCUS_WAIT = float(os.environ.get("PBSEE_FOCUS_WAIT", "1.2"))   # seconds autofocus gets to settle before it is frozen
+CHANGE_THRESHOLD = 2.0                                        # mean abs pixel diff (0-255) that counts as "screen changed"
+OPT_KEYS = ("rot", "tilt", "crop", "warp", "contrast", "sharp", "gamma", "gray", "w", "q", "avg")
+
+
+# ---------------------------------------------------------------- small helpers
+def rd(path, default=""):
+    try:
+        with open(path) as f: return f.read().strip()
+    except Exception:
+        return default
+
+def run(cmd, timeout=8):
+    try:
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+        return r.stdout + r.stderr
+    except Exception:
+        return ""
+
+def slug(s):
+    return re.sub(r"[^a-z0-9]+", "-", s.lower()).strip("-") or "cam"
+
+
+# ---------------------------------------------------------------- discovery (sysfs, stdlib only)
+def discover():
+    """Capture-capable video devices. Skips metadata nodes (UVC exposes two nodes per camera)."""
+    stable = {}
+    for d in ("by-path", "by-id"):                        # by-id wins when present
+        for p in glob.glob(f"{DEVFS}/v4l/{d}/*-index0"):
+            stable[os.path.realpath(p)] = p
+    have_ctl = bool(shutil.which("v4l2-ctl"))
+    nodes = sorted(glob.glob(f"{SYSFS}/class/video4linux/video*"),
+                   key=lambda p: int(re.sub(r"\D", "", os.path.basename(p)) or 0))
+    cams = []
+    for node in nodes:
+        base = os.path.basename(node)
+        if rd(node + "/index", "0") != "0":
+            continue
+        dev = f"{DEVFS}/{base}"
+        if have_ctl:
+            caps = run(["v4l2-ctl", "-d", dev, "--info"]).split("Device Caps")[-1]
+            if "Video Capture" not in caps:
+                continue
+        iface = os.path.realpath(node + "/device")
+        usb = os.path.dirname(iface)
+        if not os.path.exists(os.path.join(usb, "idVendor")):
+            usb = None
+        cams.append({
+            "dev": dev, "label": rd(node + "/name", base),
+            "product": rd(usb + "/product") if usb else "",
+            "vid": rd(usb + "/idVendor") if usb else "", "pid": rd(usb + "/idProduct") if usb else "",
+            "serial": rd(usb + "/serial") if usb else "", "bus": rd(usb + "/busnum") if usb else "",
+            "stable": stable.get(os.path.realpath(dev), dev)})
+    return cams
+
+def usb_video_devices():
+    """USB devices exposing a video-class interface (0x0e), even if no /dev/video exists."""
+    out = []
+    for d in glob.glob(f"{SYSFS}/bus/usb/devices/*"):
+        if not os.path.exists(d + "/idVendor"):
+            continue
+        if any(rd(i + "/bInterfaceClass") == "0e" for i in glob.glob(d + "/*:*")):
+            out.append({"product": rd(d + "/product", "?"), "vid": rd(d + "/idVendor"),
+                        "pid": rd(d + "/idProduct"), "bus": rd(d + "/busnum")})
+    return out
+
+def formats(dev):
+    out = run(["v4l2-ctl", "-d", dev, "--list-formats-ext"])
+    fmts, cur, size = {}, None, None
+    for line in out.splitlines():
+        m = re.search(r"\[\d+\]: '(\w+)'", line)
+        if m: cur = m.group(1); fmts[cur] = {}; continue
+        m = re.search(r"Size: Discrete (\d+)x(\d+)", line)
+        if m and cur: size = (int(m.group(1)), int(m.group(2))); fmts[cur][size] = []; continue
+        m = re.search(r"\(([\d.]+) fps\)", line)
+        if m and cur and size: fmts[cur][size].append(float(m.group(1)))
+    return fmts
+
+def choose_mode(fmts, want, fps):
+    """Prefer MJPG (camera-compressed, free to pass through); else any format. Returns (kind, 'WxH', fps)."""
+    for f in ["MJPG"] + [x for x in fmts if x != "MJPG"]:
+        sizes = fmts.get(f) or {}
+        if not sizes:
+            continue
+        ok = [s for s in sizes if s[0] <= want[0] and s[1] <= want[1]] or list(sizes)
+        s = max(ok, key=lambda z: z[0] * z[1])
+        fr = sizes[s]
+        return ("mjpeg" if f == "MJPG" else "raw"), f"{s[0]}x{s[1]}", (min(fr, key=lambda x: abs(x - fps)) if fr else fps)
+    return "mjpeg", f"{want[0]}x{want[1]}", fps
+
+
+# ---------------------------------------------------------------- config
+def load_config():
+    cfg = {"port": 8808, "listen": "127.0.0.1", "cameras": []}
+    try:
+        with open(SEE_CONFIG) as f: cfg.update(json.load(f))
+    except Exception:
+        pass
+    return cfg
+
+def save_config(cfg):
+    tmp = SEE_CONFIG + ".tmp"
+    with open(tmp, "w") as f: json.dump(cfg, f, indent=2)
+    os.replace(tmp, SEE_CONFIG)
+
+def match_entry(cfg, info, claimed):
+    for e in cfg.get("cameras", []):
+        if id(e) in claimed: continue
+        m = e.get("match", "")
+        kind, _, val = m.partition(":")
+        if ((kind == "usb" and f"{info['vid']}:{info['pid']}".lower() == val.lower() and info["vid"]) or
+                (kind == "name" and val.lower() in (info["product"] + " " + info["label"]).lower()) or
+                (kind == "serial" and val and val == info["serial"]) or
+                (kind == "path" and val in (info["stable"], info["dev"]))):
+            return e
+    return None
+
+
+# ---------------------------------------------------------------- frames + processing (Pillow/numpy, imported lazily)
+def split_frames(buf):
+    """JPEG frames from a byte stream. Returns (frames, remainder)."""
+    frames = []
+    while True:
+        s = buf.find(b"\xff\xd8")
+        if s < 0:
+            return frames, buf[-1:]
+        e = buf.find(b"\xff\xd9", s + 2)
+        if e < 0:
+            return frames, buf[s:]
+        frames.append(buf[s:e + 2]); buf = buf[e + 2:]
+
+def has_huffman(jpeg):
+    return jpeg.find(b"\xff\xc4") != -1        # raw MJPEG from some webcams omits the tables browsers need
+
+def reencode(jpeg, q=85):
+    from PIL import Image
+    im = Image.open(io.BytesIO(jpeg)); im.load()
+    out = io.BytesIO(); im.save(out, "JPEG", quality=q)
+    return out.getvalue()
+
+def persp_coeffs(src_pts, w, h):
+    """Coefficients for PIL's PERSPECTIVE transform: output (x,y) in a w*h rect -> source quad (TL,TR,BR,BL)."""
+    import numpy as np
+    A, B = [], []
+    for (x, y), (X, Y) in zip([(0, 0), (w, 0), (w, h), (0, h)], src_pts):
+        A.append([x, y, 1, 0, 0, 0, -X * x, -X * y]); B.append(X)
+        A.append([0, 0, 0, x, y, 1, -Y * x, -Y * y]); B.append(Y)
+    return [float(v) for v in np.linalg.solve(np.array(A, float), np.array(B, float))]
+
+def _nums(v, n):
+    if isinstance(v, str):
+        v = [float(x) for x in v.split(",") if x != ""]
+    return list(v) if v is not None and len(v) == n else None
+
+def parse_opts(q, base):
+    o = dict(base or {})
+    if q.get("raw") and q["raw"][-1] not in ("0", ""):
+        o = {}
+    def one(k): return q[k][-1] if k in q and q[k] else None
+    for k, cast in (("rot", int), ("tilt", float), ("w", int), ("q", int), ("contrast", float), ("sharp", float),
+                    ("gamma", float), ("gray", int), ("fps", float), ("avg", int)):
+        v = one(k)
+        if v not in (None, ""):
+            try: o[k] = cast(v)
+            except ValueError: pass
+    if "tilt" in o: o["tilt"] = max(-45.0, min(45.0, o["tilt"]))
+    if "avg" in o: o["avg"] = max(1, min(16, o["avg"]))
+    for k, n in (("crop", 4), ("warp", 8)):
+        v = _nums(one(k), n) if one(k) else None
+        if v: o[k] = v
+    return o
+
+def needs_processing(o):
+    return bool(o.get("avg", 1) > 1 or o.get("rot") or o.get("tilt") or o.get("crop") or o.get("warp") or o.get("contrast") or o.get("sharp")
+                or o.get("gray") or o.get("w") or (o.get("gamma") not in (None, 0, 1, 1.0)))
+
+class Denoiser:
+    """Temporal denoise for a still scene: running mean of the last n frames, restarted when the picture moves.
+    Sensor noise falls with sqrt(n); text edges stay put because a changed frame resets the mean."""
+    MOVE = 6.0                                                  # mean abs diff (0-255) on a 32px thumbnail that counts as motion
+
+    def __init__(self, n):
+        self.n, self.acc, self.k, self.thumb = max(1, int(n)), None, 0, None
+
+    def add(self, jpeg):
+        from PIL import Image, ImageChops, ImageStat
+        im = Image.open(io.BytesIO(jpeg)).convert("RGB")
+        t = im.convert("L").resize((32, 32))
+        if self.acc is None or self.acc.size != im.size or ImageStat.Stat(ImageChops.difference(t, self.thumb)).mean[0] > self.MOVE:
+            self.acc, self.k = im, 1
+        else:
+            self.k = min(self.k + 1, self.n)
+            self.acc = Image.blend(self.acc, im, 1.0 / self.k)
+        self.thumb = t
+        return self.acc
+
+
+def process(jpeg, o, im=None):
+    """Pass-through unless the view needs work. Order: tilt (crop views) -> warp/crop -> tilt (warped views) -> rotate -> contrast/gamma/sharpen -> resize.
+    tilt = degrees to straighten a crooked camera (counter-clockwise positive)."""
+    if im is None and not needs_processing(o):
+        return jpeg
+    from PIL import Image, ImageOps, ImageEnhance
+    T, R, TR = getattr(Image, "Transform", Image), getattr(Image, "Resampling", Image), getattr(Image, "Transpose", Image)
+    if im is None: im = Image.open(io.BytesIO(jpeg))
+    W, H = im.size
+    maxw = int(o.get("w") or 0)
+    rot = int(o.get("rot") or 0) % 360
+    if maxw and not o.get("warp") and hasattr(im, "draft"):   # let the JPEG decoder shrink for us (cheap on slow CPUs)
+        side = int(o.get("rot") or 0) % 180 != 0         # after a 90/270 turn the output width comes from the source height
+        c = o.get("crop")
+        need = int(maxw / max((c[3] if side else c[2]) if c else 1.0, 0.05))
+        req = (need * W // H, need) if side else (need, need * H // W)
+        im.draft("RGB", (max(1, req[0]), max(1, req[1])))
+    im = im.convert("RGB")
+    W, H = im.size
+    tilt = float(o.get("tilt") or 0)
+    if tilt and not o.get("warp"):                       # straighten first so a plain crop can use every pixel
+        im = im.rotate(tilt, resample=R.BICUBIC)
+    if o.get("warp"):
+        wp = o["warp"]; pts = [(wp[i] * W, wp[i + 1] * H) for i in (0, 2, 4, 6)]
+        d = lambda a, b: math.hypot(a[0] - b[0], a[1] - b[1])
+        ow, oh = (d(pts[0], pts[1]) + d(pts[3], pts[2])) / 2, (d(pts[0], pts[3]) + d(pts[1], pts[2])) / 2
+        fw = oh if rot % 180 else ow                     # `w` limits the final (rotated) width
+        if maxw and fw > maxw: ow, oh = ow * maxw / fw, oh * maxw / fw
+        ow, oh = max(8, int(ow)), max(8, int(oh))
+        im = im.transform((ow, oh), T.PERSPECTIVE, persp_coeffs(pts, ow, oh), R.BICUBIC)
+        if tilt: im = im.rotate(tilt, resample=R.BICUBIC)   # fixes a hastily marked quadrilateral
+    elif o.get("crop"):
+        x, y, w, h = o["crop"]
+        im = im.crop((int(x * W), int(y * H), max(int((x + w) * W), int(x * W) + 1), max(int((y + h) * H), int(y * H) + 1)))
+    if rot:
+        im = im.transpose({90: TR.ROTATE_270, 180: TR.ROTATE_180, 270: TR.ROTATE_90}[rot])
+    if o.get("contrast"):
+        im = ImageOps.autocontrast(im, cutoff=float(o["contrast"]))
+    g = o.get("gamma")
+    if g and g != 1:
+        im = im.point([int(255 * ((i / 255) ** (1 / g)) + 0.5) for i in range(256)] * 3)
+    if o.get("sharp"):
+        im = ImageEnhance.Sharpness(im).enhance(1 + float(o["sharp"]))
+    if maxw and im.width > maxw:
+        im = im.resize((maxw, max(1, im.height * maxw // im.width)), R.LANCZOS)
+    if o.get("gray"):
+        im = im.convert("L")
+    out = io.BytesIO(); im.save(out, "JPEG", quality=int(o.get("q") or 90), subsampling=0)
+    return out.getvalue()
+
+
+# ---------------------------------------------------------------- one camera = one on-demand ffmpeg
+class Cam:
+    def __init__(self, name, src, entry, info):
+        self.name, self.src, self.entry, self.info = name, src, entry, info
+        self.present = True
+        self.cond = threading.Condition()
+        self.latest, self.seq = None, 0
+        self.viewers, self.last_use = 0, 0.0
+        self.thread = self.proc = None
+        self.error, self.fps = "", 0.0
+        self.stamps = []
+        self.dht_ok = None
+        self.prev, self.change, self.last_change = None, 0.0, 0.0
+        self.last_sample = 0.0
+        self.force_raw = False
+        self.running = False
+
+    # -- config views
+    def defaults(self): return dict(self.entry.get("opts") or {})
+    def want_size(self):
+        m = re.match(r"(\d+)x(\d+)", str(self.entry.get("size", "1920x1080")))
+        return (int(m.group(1)), int(m.group(2))) if m else (1920, 1080)
+
+    # -- lifecycle
+    def acquire(self):
+        with self.cond:
+            self.viewers += 1; self.last_use = time.time()
+        self._ensure()
+    def release(self):
+        with self.cond:
+            self.viewers = max(0, self.viewers - 1); self.last_use = time.time()
+    def touch(self):
+        with self.cond: self.last_use = time.time()
+        self._ensure()
+    def _ensure(self):
+        with self.cond:
+            if self.thread is None:
+                self.thread = threading.Thread(target=self._run, daemon=True); self.thread.start()
+    def shutdown(self):
+        with self.cond: self.viewers = 0; self.last_use = 0
+        p = self.proc
+        if p:
+            try: p.terminate()
+            except Exception: pass
+
+    def focus(self, lock):
+        """Lock: let autofocus settle once, then freeze it where it landed (stops focus hunting that smears text).
+        Unlock: back to continuous autofocus."""
+        if self.src.startswith("test:") or not shutil.which("v4l2-ctl"): return {"ok": False, "error": "camera has no focus control"}
+        have = run(["v4l2-ctl", "-d", self.src, "--list-ctrls"])
+        auto = next((k for k in ("focus_automatic_continuous", "focus_auto") if k in have), None)
+        if not auto or "focus_absolute" not in have: return {"ok": False, "error": "camera has no focus control"}
+        ctl = dict(self.entry.get("controls") or {})
+        for k in ("focus_automatic_continuous", "focus_auto", "focus_absolute"): ctl.pop(k, None)
+        self.entry["controls"] = ctl
+        self.acquire()
+        try:
+            time.sleep(FOCUS_WAIT)
+            run(["v4l2-ctl", "-d", self.src, "--set-ctrl", f"{auto}=1"])
+            val = None
+            if lock:
+                time.sleep(FOCUS_WAIT * 2)
+                m = re.search(r"focus_absolute\D*(-?\d+)", run(["v4l2-ctl", "-d", self.src, "--get-ctrl", "focus_absolute"]))
+                if not m: return {"ok": False, "error": "could not read focus"}
+                val = int(m.group(1))
+                run(["v4l2-ctl", "-d", self.src, "--set-ctrl", f"{auto}=0"])
+                run(["v4l2-ctl", "-d", self.src, "--set-ctrl", f"focus_absolute={val}"])
+                ctl[auto], ctl["focus_absolute"] = 0, val
+        finally:
+            self.release()
+        State.reg.save_controls(self)
+        return {"ok": True, "locked": bool(lock), "value": val}
+
+    def wait_frame(self, after, timeout=5.0):
+        with self.cond:
+            self.cond.wait_for(lambda: self.seq != after, timeout)
+            return self.seq, self.latest if self.seq != after else None
+
+    def _idle(self):
+        with self.cond:
+            return self.viewers <= 0 and time.time() - self.last_use > IDLE_STOP
+
+    # -- capture
+    BASE = ["ffmpeg", "-hide_banner", "-loglevel", "error", "-nostdin"]
+
+    def _input(self):
+        """(input args, copy_ok): ffmpeg input side. copy_ok = camera already delivers MJPEG, so no re-encode."""
+        fps = float(self.entry.get("fps", 10))
+        if self.src.startswith("test:"):
+            w, h = self.want_size()
+            return ["-re", "-f", "lavfi", "-i", f"testsrc2=size={min(w, 640)}x{min(h, 480)}:rate={fps:g}"], False
+        kind, size = "mjpeg", f"{self.want_size()[0]}x{self.want_size()[1]}"
+        if shutil.which("v4l2-ctl"):
+            fm = formats(self.src)
+            if fm: kind, size, fps = choose_mode(fm, self.want_size(), fps)
+            for k, v in (self.entry.get("controls") or {}).items():
+                run(["v4l2-ctl", "-d", self.src, "--set-ctrl", f"{k}={v}"])
+        if self.force_raw: kind = "raw"
+        args = ["-f", "v4l2"] + (["-input_format", "mjpeg"] if kind == "mjpeg" else []) + \
+               ["-video_size", size, "-framerate", f"{fps:g}", "-i", self.src]
+        return args, kind == "mjpeg"
+
+    def _cmd(self):
+        args, copy_ok = self._input()
+        out = ["-c", "copy"] if copy_ok else ["-c:v", "mjpeg", "-q:v", "5"]
+        return self.BASE + args + out + ["-f", "mjpeg", "pipe:1"]
+
+    def _run(self):
+        while True:
+            if self._idle():
+                with self.cond:
+                    if self.viewers <= 0 and time.time() - self.last_use > IDLE_STOP:
+                        self.thread = None; self.running = False
+                        return
+            self._capture_once()
+            if not self._idle():
+                time.sleep(1.0)                              # back off before restarting a camera that dropped out
+
+    def _capture_once(self):
+        try:
+            p = subprocess.Popen(self._cmd(), stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        except FileNotFoundError:
+            self.error = "ffmpeg not found: run `pbs doctor --fix`"; time.sleep(4); return
+        self.proc, self.running, self.error = p, True, ""
+        errs = []
+        threading.Thread(target=lambda: errs.append(p.stderr.read(2000)), daemon=True).start()
+        buf, got, t0 = b"", 0, time.time()
+        try:
+            while not self._idle():
+                r, _, _ = select.select([p.stdout], [], [], 1.0)
+                if not r:
+                    if p.poll() is not None: break
+                    continue
+                chunk = os.read(p.stdout.fileno(), 65536)
+                if not chunk: break
+                frames, buf = split_frames(buf + chunk)
+                if len(buf) > 8_000_000: buf = b""
+                for fr in frames:
+                    got += 1; self._publish(fr)
+        finally:
+            try: p.terminate(); p.wait(timeout=2)
+            except Exception:
+                try: p.kill()
+                except Exception: pass
+            self.proc = None
+        if got == 0 and not self._idle():
+            msg = (errs[0].decode(errors="replace").strip().splitlines() or ["no frames"])[-1] if errs else "no frames"
+            self.error = msg
+            if not self.src.startswith("test:") and time.time() - t0 < 6 and not self.force_raw:
+                self.force_raw = True                      # camera may not do MJPEG: retry as raw -> mjpeg
+            if not self.src.startswith("test:"): time.sleep(2)
+
+    def _publish(self, fr):
+        if self.dht_ok is None:
+            self.dht_ok = has_huffman(fr)
+        if not self.dht_ok:
+            try: fr = reencode(fr)
+            except Exception: pass
+        now = time.time()
+        self.stamps = [t for t in self.stamps if now - t < 3.0] + [now]
+        self.fps = len(self.stamps) / 3.0 if len(self.stamps) > 1 else 0.0
+        with self.cond:
+            self.latest, self.seq = fr, self.seq + 1
+            self.cond.notify_all()
+        if now - self.last_sample >= 0.5:
+            self.last_sample = now; self._sample(fr, now)
+
+    def _sample(self, fr, now):
+        try:
+            from PIL import Image
+            import numpy as np
+            im = Image.open(io.BytesIO(fr)); im.draft("L", (160, 120))
+            a = np.asarray(im.convert("L").resize((80, 60)), dtype=np.int16)
+            if self.prev is not None:
+                self.change = float(np.abs(a - self.prev).mean())
+                if self.change > CHANGE_THRESHOLD: self.last_change = now
+            self.prev = a
+        except Exception:
+            pass
+
+    def status(self):
+        now = time.time()
+        return {"name": self.name, "present": self.present, "running": self.running, "viewers": self.viewers,
+                "fps": round(self.fps, 1), "frame_age": round(now - self.stamps[-1], 2) if self.stamps else None,
+                "change": round(self.change, 2),
+                "seconds_since_change": round(now - self.last_change, 1) if self.last_change else None,
+                "error": self.error}
+
+
+class Registry:
+    def __init__(self, cfg, test_source=False):
+        self.cfg, self.cams, self.lock, self.test = cfg, {}, threading.RLock(), test_source
+        self.t_refresh = 0.0
+
+    def refresh(self, force=False):
+        with self.lock:
+            if not force and self.cams and time.time() - self.t_refresh < 5:
+                return self.cams                           # discovery spawns v4l2-ctl: don't redo it every poll
+            self.t_refresh = time.time()
+            claimed, used = set(), set()
+            for c in self.cams.values(): c.present = False
+            infos = discover()
+            if self.test:
+                infos.append({"dev": "test:", "label": "Synthetic test source", "product": "test", "vid": "", "pid": "",
+                              "serial": "", "bus": "", "stable": "test:"})
+            for info in infos:
+                entry = match_entry(self.cfg, info, claimed)
+                if entry: claimed.add(id(entry))
+                else: entry = {}
+                name = entry.get("name") or slug(info["product"] or info["label"])
+                base, i = name, 2
+                while name in used: name = f"{base}-{i}"; i += 1
+                used.add(name)
+                cam = self.cams.get(name)
+                if cam is None or cam.src != info["stable"]:
+                    if cam: cam.shutdown()
+                    cam = self.cams[name] = Cam(name, info["stable"], entry, info)
+                cam.entry, cam.info, cam.present = entry, info, True
+            return self.cams
+
+    def get(self, name):
+        with self.lock:
+            if name not in self.cams: self.refresh(force=True)
+            return self.cams.get(name)
+
+    def describe(self):
+        self.refresh()
+        return [{"name": c.name, "label": c.info.get("label"), "src": c.src, "present": c.present,
+                 "usb": f"{c.info.get('vid')}:{c.info.get('pid')}" if c.info.get("vid") else "",
+                 "opts": c.defaults(), "focus_locked": "focus_absolute" in (c.entry.get("controls") or {})}
+                for c in self.cams.values()]
+
+    def status(self):
+        self.refresh()
+        return {"cams": [c.status() for c in self.cams.values()]}
+
+    def save_controls(self, cam):
+        with self.lock:
+            if cam.entry not in self.cfg["cameras"]: self._adopt(cam)
+            save_config(self.cfg)
+
+    def _adopt(self, cam):
+        info = cam.info
+        cam.entry.update({"name": cam.name,
+                          "match": f"usb:{info['vid']}:{info['pid']}" if info.get("vid") and
+                          sum(1 for c in self.cams.values() if c.info.get("vid") == info["vid"] and c.info.get("pid") == info["pid"]) == 1
+                          else f"path:{info['stable']}"})
+        self.cfg["cameras"].append(cam.entry)
+
+    def save_opts(self, cam, opts):
+        with self.lock:
+            if cam.entry not in self.cfg["cameras"]: self._adopt(cam)
+            cam.entry["opts"] = {k: v for k, v in opts.items() if k in OPT_KEYS and v not in (None, "", 0, [])}
+            save_config(self.cfg)
+
+    def shutdown(self):
+        for c in self.cams.values(): c.shutdown()
+
+
+# ---------------------------------------------------------------- HTTP
+PAGE = r"""<!doctype html><meta charset=utf-8><meta name=viewport content="width=device-width,initial-scale=1">
+<title>pbsee</title>
+<style>body{font:14px system-ui;margin:0;background:#111;color:#ddd}#bar{padding:8px;display:flex;gap:10px;flex-wrap:wrap;align-items:center;background:#1c1c1c}
+button,select,input{font:inherit}img{max-width:100%;display:block;margin:0 auto}#st{padding:6px 10px;color:#9bb}#v.cal{cursor:crosshair;outline:2px solid #fb0}</style>
+<div id=bar>
+ <select id=cam></select>
+ rotate <select id=rot><option>0<option>90<option>180<option>270</select>
+ contrast <input id=con type=range min=0 max=10 step=0.5 value=0 style=width:90px>
+ sharp <input id=sh type=range min=0 max=3 step=0.5 value=0 style=width:90px>
+ width <select id=w><option value=0>native<option>480<option>720<option>960<option>1280</select>
+ <button id=cal>Calibrate screen</button> <button id=clr>Clear</button> <button id=sv>Save view</button>
+</div><div id=st></div><img id=v>
+<script>
+const T=new URLSearchParams(location.search).get('t')||'',$=id=>document.getElementById(id);
+const U=(p,o={})=>{const q=new URLSearchParams(o);if(T)q.set('t',T);const s=q.toString();return p+(s?'?'+s:'')};
+let cams=[],cur='',pts=[],cal=false;
+const vals=()=>({rot:$('rot').value,contrast:$('con').value,sharp:$('sh').value,w:$('w').value});
+function load(){if(!cur)return;$('v').className=cal?'cal':'';$('v').src=U('/stream/'+cur,cal?{raw:1,w:960,_:Date.now()}:{...vals(),_:Date.now()})}
+function pick(){const c=cams.find(x=>x.name==cur)||{},o=c.opts||{};$('rot').value=o.rot||0;$('con').value=o.contrast||0;$('sh').value=o.sharp||0;$('w').value=o.w||0;load()}
+fetch(U('/cams')).then(r=>r.json()).then(j=>{cams=j;$('cam').innerHTML=j.map(c=>`<option value="${c.name}">${c.name} (${c.label})`).join('');cur=(j[0]||{}).name;pick()});
+$('cam').onchange=e=>{cur=e.target.value;cal=false;pick()};
+for(const id of ['rot','con','sh','w'])$(id).onchange=load;
+$('cal').onclick=()=>{cal=true;pts=[];$('st').textContent='Click the phone screen corners: top-left, top-right, bottom-right, bottom-left (as you want it shown)';load()};
+$('clr').onclick=()=>fetch(U('/calibrate/'+cur),{method:'POST',body:JSON.stringify({clear:true})}).then(()=>{cal=false;load()});
+$('sv').onclick=()=>fetch(U('/save/'+cur),{method:'POST',body:JSON.stringify(vals())}).then(()=>$('st').textContent='saved');
+$('v').onclick=e=>{if(!cal)return;const r=e.target.getBoundingClientRect();pts.push((e.clientX-r.left)/r.width,(e.clientY-r.top)/r.height);
+ $('st').textContent='corner '+(pts.length/2)+'/4';
+ if(pts.length==8)fetch(U('/calibrate/'+cur),{method:'POST',body:JSON.stringify({warp:pts})}).then(()=>{cal=false;pts=[];fetch(U('/cams')).then(r=>r.json()).then(j=>{cams=j;pick()})})};
+setInterval(()=>fetch(U('/status')).then(r=>r.json()).then(s=>{const c=s.cams.find(x=>x.name==cur);if(!c||cal)return;
+ $('st').textContent=(c.error?'error: '+c.error+' | ':'')+c.fps+' fps | change '+c.change+(c.seconds_since_change!=null?' | last change '+c.seconds_since_change+'s ago':'')}),1000);
+</script>"""
+
+
+class State:
+    reg = None
+    token = ""
+
+class SeeHandler(BaseHTTPRequestHandler):
+    server_version = "pbsee"
+    def log_message(self, *a): pass
+
+    def _send(self, code, body, ctype="application/json"):
+        self.send_response(code)
+        self.send_header("Content-Type", ctype); self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "no-store"); self.end_headers()
+        self.wfile.write(body)
+    def _json(self, obj, code=200): self._send(code, json.dumps(obj).encode())
+
+    def _auth(self, q):
+        if not State.token: return True
+        given = (q.get("t") or [""])[-1] or self.headers.get("Authorization", "").replace("Bearer ", "")
+        return hmac.compare_digest(given, State.token)
+
+    def do_GET(self):
+        u = urllib.parse.urlparse(self.path); q = urllib.parse.parse_qs(u.query)
+        parts = [p for p in u.path.split("/") if p]
+        if not self._auth(q): return self._send(401, b"token required (?t=...)", "text/plain")
+        reg = State.reg
+        if not parts or parts == ["view"]: return self._send(200, PAGE.encode(), "text/html; charset=utf-8")
+        if parts == ["cams"]: return self._json(reg.describe())
+        if parts == ["status"]: return self._json(reg.status())
+        if len(parts) == 2 and parts[0] in ("stream", "snap"):
+            cam = reg.get(parts[1][:-4] if parts[1].endswith(".jpg") else parts[1])
+            if not cam: return self._send(404, b"no such camera", "text/plain")
+            o = parse_opts(q, cam.defaults())
+            if parts[0] == "snap": return self._snap(cam, o, explicit="avg" in q or ("raw" in q and q["raw"][-1] not in ("0", "")))
+            return self._stream(cam, o)
+        self._send(404, b"not found", "text/plain")
+
+    def do_POST(self):
+        u = urllib.parse.urlparse(self.path); q = urllib.parse.parse_qs(u.query)
+        parts = [p for p in u.path.split("/") if p]
+        if not self._auth(q): return self._send(401, b"token required", "text/plain")
+        if len(parts) != 2 or parts[0] not in ("calibrate", "save", "focus"):
+            return self._send(404, b"not found", "text/plain")
+        cam = State.reg.get(parts[1])
+        if not cam: return self._send(404, b"no such camera", "text/plain")
+        try:
+            body = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0)) or 0) or b"{}")
+        except Exception:
+            return self._send(400, b"bad json", "text/plain")
+        if parts[0] == "focus":
+            return self._json(cam.focus(bool(body.get("lock", True))))
+        opts = cam.defaults()
+        if parts[0] == "calibrate":
+            if body.get("clear"): opts.pop("warp", None); opts.pop("crop", None)
+            elif _nums(body.get("warp"), 8): opts["warp"] = _nums(body["warp"], 8); opts.pop("crop", None)
+            else: return self._send(400, b"need warp[8] or clear", "text/plain")
+        else:
+            for k, cast in (("rot", int), ("tilt", float), ("w", int), ("q", int), ("contrast", float), ("sharp", float), ("gamma", float), ("gray", int), ("avg", int)):
+                if k in body:
+                    try: opts[k] = cast(body[k])
+                    except (TypeError, ValueError): pass
+            if "avg" in opts: opts["avg"] = max(1, min(16, opts["avg"]))
+            if "tilt" in opts: opts["tilt"] = round(max(-45.0, min(45.0, float(opts["tilt"]))), 2)
+            if _nums(body.get("crop"), 4): opts["crop"] = _nums(body["crop"], 4)
+        State.reg.save_opts(cam, opts)
+        self._json({"ok": True, "opts": cam.defaults()})
+
+    def _snap(self, cam, o, explicit=False):
+        cam.touch()
+        seq, jpg = cam.wait_frame(cam.seq, 10)
+        if jpg is None: return self._send(504, (cam.error or "no frame").encode(), "text/plain")
+        try:
+            n = int(o.get("avg") or 1) if explicit else max(int(o.get("avg") or 1), 4)      # stills are averaged by default
+            if n > 1:
+                d = Denoiser(n); d.MOVE = 1e9; im = d.add(jpg)
+                for _ in range(n - 1):
+                    seq, nxt = cam.wait_frame(seq, 2)
+                    if nxt is not None: im = d.add(nxt)
+                return self._send(200, process(jpg, o, im), "image/jpeg")
+            self._send(200, process(jpg, o), "image/jpeg")
+        except Exception as e: self._send(500, f"processing failed: {e}".encode(), "text/plain")
+
+    def _stream(self, cam, o):
+        cam.acquire()
+        try:
+            self.connection.settimeout(15)               # a stalled client must not keep a camera running forever
+            self.send_response(200)
+            self.send_header("Content-Type", "multipart/x-mixed-replace; boundary=frame")
+            self.send_header("Cache-Control", "no-store"); self.end_headers()
+            seq, last, dt = 0, 0.0, (1.0 / o["fps"] if o.get("fps") else 0.0)
+            dn = Denoiser(o["avg"]) if int(o.get("avg") or 1) > 1 else None
+            while True:
+                seq2, jpg = cam.wait_frame(seq, 5)
+                if jpg is None: continue
+                seq = seq2
+                if dt and time.time() - last < dt: continue
+                out = process(jpg, o, dn.add(jpg)) if dn else process(jpg, o)
+                self.wfile.write(b"--frame\r\nContent-Type: image/jpeg\r\nContent-Length: %d\r\n\r\n" % len(out))
+                self.wfile.write(out); self.wfile.write(b"\r\n"); self.wfile.flush()
+                last = time.time()
+        except (BrokenPipeError, ConnectionResetError, OSError):
+            pass
+        finally:
+            cam.release()
+
+
+def start_server(a):
+    cfg = load_config()
+    listen, port = a.listen or cfg.get("listen", "127.0.0.1"), a.port or int(cfg.get("port", 8808))
+    token = a.token or cfg.get("token", "")
+    if listen not in ("127.0.0.1", "localhost", "::1") and not token:
+        token = secrets.token_urlsafe(9); cfg["token"] = token; save_config(cfg)     # never expose a camera feed unauthenticated
+    State.reg, State.token = Registry(cfg, a.test_source), token
+    State.reg.refresh()
+    srv = ThreadingHTTPServer((listen, port), SeeHandler); srv.daemon_threads = True
+    return srv, listen, port, token
+
+
+def cmd_serve(a):
+    srv, listen, port, token = start_server(a)
+    found = ", ".join(c.name for c in State.reg.cams.values()) or "none yet (plug one in; `doctor` explains)"
+    print(f"pbsee on http://{listen}:{port}/{'?t=' + token if token else ''}   cameras: {found}", flush=True)
+    try: srv.serve_forever()
+    except KeyboardInterrupt: pass
+    finally:
+        State.reg.shutdown(); srv.server_close()
+
+
+# ---------------------------------------------------------------- terminal status screen (`sb`)
+def graphics_kind():
+    env = os.environ
+    if env.get("KITTY_WINDOW_ID") or env.get("TERM") == "xterm-kitty" or env.get("TERM_PROGRAM") == "ghostty": return "kitty"
+    if env.get("TERM_PROGRAM") in ("iTerm.app", "WezTerm"): return "iterm"
+    return None
+
+
+def image_seq(kind, jpeg, cols=40):
+    """Escape sequence that draws a JPEG at the cursor, `cols` cells wide, without moving the cursor."""
+    import base64
+    if kind == "iterm":
+        return f"\x1b]1337;File=inline=1;width={cols};preserveAspectRatio=1;size={len(jpeg)}:{base64.b64encode(jpeg).decode()}\x07"
+    from PIL import Image
+    buf = io.BytesIO(); Image.open(io.BytesIO(jpeg)).convert("RGB").save(buf, "PNG")
+    b64 = base64.b64encode(buf.getvalue()).decode()
+    chunks = [b64[i:i + 4096] for i in range(0, len(b64), 4096)] or [""]
+    out = []
+    for i, c in enumerate(chunks):
+        more = 1 if i < len(chunks) - 1 else 0
+        head = f"a=T,f=100,c={cols},C=1,q=2,m={more}" if i == 0 else f"q=2,m={more}"
+        out.append(f"\x1b_G{head};{c}\x1b\\")
+    return "".join(out)
+
+
+def state_line(st):
+    if st.get("error") or not st.get("present", True): return "○", "stopped"
+    if st.get("fps", 0) > 0 and (st.get("frame_age") is None or st["frame_age"] < 3): return "●", "live"
+    return "◐", "idle"
+
+
+def cmd_run(a):
+    """Server + inline status lines (a line is printed only when the state changes)."""
+    srv, listen, port, token = start_server(a)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    print(f"http://{'localhost' if listen in ('127.0.0.1', '0.0.0.0') else listen}:{port}/" + (f"?t={token}" if token else ""), flush=True)
+    last = None
+    try:
+        while True:
+            State.reg.refresh()
+            sts = [c.status() for c in State.reg.cams.values()]
+            dot, word = state_line(sts[0]) if sts else ("○", "stopped")
+            if word != last:
+                print(f"{dot} see {word}" + (f"  {sts[0]['name']}" if sts else "  no camera"), flush=True)
+                last = word
+            time.sleep(1)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        State.reg.shutdown(); srv.shutdown(); srv.server_close()
+
+
+def cmd_screen(a):
+    """Server + a full-screen status view: Live / idle / stopped per camera, and (optionally) the latest picture."""
+    import termios, tty
+    srv, listen, port, token = start_server(a)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    kind = None if a.no_pic else graphics_kind()
+    show_pic = kind is not None
+    url = f"http://{'localhost' if listen in ('127.0.0.1', '0.0.0.0') else listen}:{port}/" + (f"?t={token}" if token else "")
+    tty_ok = sys.stdin.isatty()
+    old = None
+    if tty_ok:
+        old = termios.tcgetattr(sys.stdin); tty.setcbreak(sys.stdin.fileno())
+    sys.stdout.write("\x1b[?25l\x1b[2J"); sys.stdout.flush()
+    try:
+        while True:
+            reg = State.reg; reg.refresh()
+            lines = ["PBSEE", ""]
+            sts = [c.status() for c in reg.cams.values()]
+            if not sts: lines.append("○ no camera")
+            for st in sts:
+                dot, word = state_line(st)
+                age = st.get("seconds_since_change")
+                lines.append(f"{dot} {word:<8}{st['name']}" + (f"  {st['fps']:.0f} fps  change {st['change']}" + (f"  {age:.0f}s" if age is not None else "") if word == "live" else ""))
+            lines += ["", url, "", ("p pic  " if kind else "") + "q quit"]
+            sys.stdout.write("\x1b[H" + "".join(l + "\x1b[K\n" for l in lines) + "\x1b[J")
+            if show_pic and sts and sts[0]["present"]:
+                try:
+                    q = "?w=480&q=50" + (f"&t={token}" if token else "")
+                    with urllib.request.urlopen(f"http://127.0.0.1:{port}/snap/{urllib.parse.quote(sts[0]['name'])}.jpg{q}", timeout=8) as r:
+                        sys.stdout.write(image_seq(kind, r.read()))
+                except Exception:
+                    pass
+            sys.stdout.flush()
+            r, _, _ = select.select([sys.stdin], [], [], 1.0) if tty_ok else (select.select([], [], [], 1.0)[0], 0, 0)
+            if r:
+                k = sys.stdin.read(1)
+                if k in ("q", "\x03"): break
+                if k == "p" and kind:
+                    show_pic = not show_pic
+                    sys.stdout.write("\x1b[2J"); sys.stdout.flush()
+    except KeyboardInterrupt:
+        pass
+    finally:
+        sys.stdout.write("\x1b[?25h\x1b[2J\x1b[H"); sys.stdout.flush()
+        if old: termios.tcsetattr(sys.stdin, termios.TCSADRAIN, old)
+        State.reg.shutdown(); srv.shutdown(); srv.server_close()
+
+
+def cmd_snap(a):
+    cfg = load_config(); reg = Registry(cfg, a.test_source); reg.refresh()
+    cam = reg.get(a.name) if a.name else next(iter(reg.cams.values()), None)
+    if not cam: sys.exit("no such camera (try: pbs list)")
+    o = parse_opts({"raw": ["1"]} if a.raw else {}, cam.defaults())
+    cam.touch(); seq, jpg = cam.wait_frame(cam.seq, 12); cam.shutdown()
+    if jpg is None: sys.exit("no frame: " + (cam.error or "timeout"))
+    out = a.o or f"{cam.name}.jpg"
+    with open(out, "wb") as f: f.write(process(jpg, o))
+    print(out)
+
+
+def cmd_list(a):
+    cams = discover()
+    if not cams: print("No capture devices found. Run: pbs doctor"); return
+    for c in cams:
+        print(f"{slug(c['product'] or c['label'])}\n  label  : {c['label']}\n  device : {c['dev']}\n  stable : {c['stable']}"
+              f"\n  usb    : {c['vid']}:{c['pid']} (bus {c['bus']})  serial: {c['serial'] or '-'}")
+        if shutil.which("v4l2-ctl"):
+            for f, sizes in formats(c["dev"]).items():
+                top = sorted(sizes, key=lambda s: -s[0] * s[1])[:3]
+                print(f"  {f:5}  " + ", ".join(f"{w}x{h}@{max(sizes[(w, h)] or [0]):g}" for w, h in top))
+
+
+def cmd_probe(a):
+    skeleton, claimed = [], {}
+    for c in discover():
+        key = f"{c['vid']}:{c['pid']}"
+        claimed[key] = claimed.get(key, 0) + 1
+    for c in discover():
+        key = f"{c['vid']}:{c['pid']}"
+        match = f"usb:{key}" if c["vid"] and claimed[key] == 1 else f"path:{c['stable']}"
+        skeleton.append({"name": slug(c["product"] or c["label"]), "match": match, "size": "1920x1080", "fps": 10,
+                         "controls": {}, "opts": {}})
+    print(json.dumps({"port": 8808, "listen": "127.0.0.1", "cameras": skeleton}, indent=2))
+
+
+# ---------------------------------------------------------------- doctor / service
+def cmd_doctor(a):
+    fix = a.fix
+    user = os.environ.get("SUDO_USER") or getpass.getuser()
+    sudo = [] if os.geteuid() == 0 else ["sudo"]
+    bad = 0
+    def line(good, msg, hint=""):
+        nonlocal bad
+        if not good: bad += 1
+        print(("  [ ok ] " if good else "  [ !! ] ") + msg + (f"\n          -> {hint}" if hint and not good else ""))
+    print("pbsee doctor\n")
+    pkgs = [p for p, have in (("ffmpeg", shutil.which("ffmpeg")), ("v4l-utils", shutil.which("v4l2-ctl"))) if not have]
+    for mod, pkg in (("PIL", "python3-pil"), ("numpy", "python3-numpy")):
+        try: __import__(mod)
+        except ImportError: pkgs.append(pkg)
+    line(not pkgs, "packages: " + (", ".join(pkgs) + " missing" if pkgs else "ffmpeg, v4l-utils, Pillow, numpy present"),
+         f"sudo apt install -y {' '.join(pkgs)}   (or: pbs doctor --fix)")
+    if pkgs and fix:
+        print("     installing...", flush=True); subprocess.run(sudo + ["apt-get", "install", "-y"] + pkgs)
+    usb = usb_video_devices()
+    for d in usb: print(f"         USB camera seen by kernel: {d['product']} ({d['vid']}:{d['pid']}, bus {d['bus']})")
+    mod = os.path.isdir(f"{SYSFS}/module/uvcvideo")
+    line(mod or not usb, "uvcvideo kernel driver " + ("loaded" if mod else "not loaded"), "sudo modprobe uvcvideo")
+    if not mod and usb and fix: subprocess.run(sudo + ["modprobe", "uvcvideo"])
+    cams = discover()
+    line(bool(cams), f"{len(cams)} capture device(s)",
+         "kernel sees a USB camera but made no /dev/video: check `dmesg | grep -i uvc`" if usb else
+         "no camera visible: replug it. For the internal camera (not USB/UVC) send this report back")
+    groups = run(["id", "-nG", user]).split()
+    for c in cams:
+        acc = os.access(c["dev"], os.R_OK | os.W_OK)
+        line(acc, f"{c['dev']} readable by {os.environ.get('USER', user)}", f"sudo usermod -aG video {user}, then log out/in")
+        if not acc and "video" not in groups and fix:
+            subprocess.run(sudo + ["usermod", "-aG", "video", user]); print("     added to 'video' group: log out and in again")
+        if shutil.which("ffmpeg") and acc:
+            tmp = Cam("probe", c["stable"], {"fps": 10, "size": "1920x1080"}, c)
+            try:
+                r = subprocess.run(Cam.BASE + tmp._input()[0] + ["-frames:v", "3", "-f", "null", "-"],
+                                   capture_output=True, text=True, timeout=25)
+                ok, err = r.returncode == 0, (r.stderr.strip().splitlines() or [""])[-1]
+            except subprocess.TimeoutExpired:
+                ok, err = False, "timed out (camera busy? another program may be using it)"
+            line(ok, f"capture test ({slug(c['product'] or c['label'])})", err or "ffmpeg failed")
+    bus = {}
+    for c in cams: bus.setdefault(c["bus"] or "?", []).append(c)
+    for b, lst in bus.items():
+        if len(lst) > 1:
+            print(f"  [ note ] {len(lst)} cameras share USB bus {b}: fine here (cameras only stream while viewed),"
+                  " but two at high resolution at once may exceed bandwidth. Use size 640x480 in pbsee.json if so.")
+    print(f"  [ info ] config: {SEE_CONFIG} ({'exists' if os.path.exists(SEE_CONFIG) else 'none yet; `probe` prints a skeleton'})")
+    print("\n" + ("All good. Start it: pbs serve" if not bad else
+                  f"{bad} issue(s). Re-run with --fix for the ones apt/modprobe/usermod can solve."))
+
+
+def cmd_install(a):
+    install_launcher()
+
+
+def cmd_service(a):
+    user = os.environ.get("SUDO_USER") or getpass.getuser()
+    unit = f"""[Unit]
+Description=pbsee webcam viewer
+After=network.target
+
+[Service]
+User={user}
+SupplementaryGroups=video
+ExecStart={sys.executable} {os.path.abspath(__file__)} see serve
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target
+"""
+    sudo = [] if os.geteuid() == 0 else ["sudo"]
+    subprocess.run(sudo + ["tee", "/etc/systemd/system/pbsee.service"], input=unit, text=True, stdout=subprocess.DEVNULL, check=True)
+    subprocess.run(sudo + ["systemctl", "daemon-reload"], check=True)
+    subprocess.run(sudo + ["systemctl", "enable", "--now", "pbsee"], check=True)
+    print("pbsee service installed and started (config in", SEE_CONFIG + ")")
+    install_launcher()
+
+
+SEE_DOC = """PBSEE (mode 'see'): tiny multi-camera viewer for the Portabotty server (a separate process from kb mode
+on purpose: a camera crash/hang can't take down the keyboard).
+
+UVC webcams -> ffmpeg (MJPEG passthrough, no decode) -> optional light processing -> HTTP (live MJPEG, snapshots, JSON).
+Cameras only run while somebody is watching, then stop after IDLE_STOP seconds (saves CPU and USB bandwidth).
+
+  pbs doctor [--fix]       check (and fix) packages, driver, group, devices, a test capture
+  pbs list                 cameras with stable paths, USB ids, formats
+  pbs probe                config skeleton for the cameras found (paste into pbsee.json)
+  pbs run                  server + inline status lines (live / idle / stopped)  [default for `pbs`]
+  pbs screen               full-screen status view with the latest picture where the terminal supports it
+  pbs serve [--listen 0.0.0.0] [--port 8808] [--token T] [--test-source]
+  pbs snap NAME [-o out.jpg] [--raw]
+  pbs install              (re)creates pb/pbk/pbkb/pbs/pbc; same as portabotty.py --install
+  pbs install-service      optional: always-on systemd service instead of the pbs terminal
+
+Needs only: ffmpeg, python3-pil, python3-numpy (v4l-utils recommended). `doctor --fix` installs them.
+"""
+
+
+def main_see(args=None):
+    ap = argparse.ArgumentParser(description=SEE_DOC, formatter_class=argparse.RawDescriptionHelpFormatter)
+    sub = ap.add_subparsers(dest="cmd", required=True)
+    d = sub.add_parser("doctor"); d.add_argument("--fix", action="store_true"); d.set_defaults(fn=cmd_doctor)
+    sub.add_parser("list").set_defaults(fn=cmd_list)
+    sub.add_parser("probe").set_defaults(fn=cmd_probe)
+    s = sub.add_parser("serve"); s.add_argument("--listen"); s.add_argument("--port", type=int); s.add_argument("--token")
+    s.add_argument("--test-source", action="store_true", help="add a synthetic camera (no hardware needed)"); s.set_defaults(fn=cmd_serve)
+    r = sub.add_parser("run"); r.add_argument("--listen"); r.add_argument("--port", type=int); r.add_argument("--token")
+    r.add_argument("--test-source", action="store_true"); r.set_defaults(fn=cmd_run)
+    r = sub.add_parser("screen"); r.add_argument("--listen"); r.add_argument("--port", type=int); r.add_argument("--token")
+    r.add_argument("--no-pic", action="store_true"); r.add_argument("--test-source", action="store_true"); r.set_defaults(fn=cmd_screen)
+    n = sub.add_parser("snap"); n.add_argument("name", nargs="?"); n.add_argument("-o"); n.add_argument("--raw", action="store_true")
+    n.add_argument("--test-source", action="store_true"); n.set_defaults(fn=cmd_snap)
+    sub.add_parser("install").set_defaults(fn=cmd_install)
+    sub.add_parser("install-service").set_defaults(fn=cmd_service)
+    a = ap.parse_args(args)
+    a.fn(a)
+
+
+# ======================================================================
+# MCP tool logic: phone_* tools over the kb/see HTTP APIs (was pbmcp.py)
+# ======================================================================
+DEFAULT_CAM = os.environ.get("PBSEE_CAM", "")
+
+
+def http(url, data=None, headers=None, timeout=30):
+    req = urllib.request.Request(url, data=None if data is None else json.dumps(data).encode(),
+                                 headers=headers or {}, method="GET" if data is None else "POST")
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            return r.read(), r.headers.get("Content-Type", "")
+    except urllib.error.HTTPError as e:
+        body = e.read()
+        try: msg = json.loads(body).get("error", body.decode(errors="replace"))
+        except Exception: msg = body.decode(errors="replace")
+        raise RuntimeError(f"HTTP {e.code}: {msg}")
+    except (urllib.error.URLError, OSError) as e:
+        raise RuntimeError(f"cannot reach {url}: {getattr(e, 'reason', e)}")
+
+
+def kb(path, data=None):
+    raw, _ = http(KB_URL + path, data if data is not None else ({} if path != "/status" else None),
+                  {"Authorization": "Bearer " + kb_token(), "Content-Type": "application/json"})
+    return json.loads(raw)
+
+
+def cv_headers():
+    return {"Authorization": "Bearer " + sb_token()} if sb_token() else {}
+
+
+def cv_json(path):
+    raw, _ = http(SB_URL + path, None, cv_headers())
+    return json.loads(raw)
+
+
+def linked_cam():
+    """Camera linked (web console) to the active phone, else ''."""
+    try:
+        return load_cfg().get("links", {}).get(kb("/status").get("active"), "")
+    except Exception:
+        return ""
+
+
+def pick_cam(name):
+    if name or DEFAULT_CAM: return name or DEFAULT_CAM
+    c = linked_cam()
+    if c: return c
+    cams = cv_json("/cams")
+    cams = cams.get("cams", cams) if isinstance(cams, dict) else cams
+    names = [c if isinstance(c, str) else c.get("name") for c in cams]
+    if not names: raise RuntimeError("pbsee reports no cameras")
+    return names[0]
+
+
+FR = {"type": "number", "minimum": 0, "maximum": 1}
+TOOLS = [
+    ("phone_status", "List paired phones, which is active/connected, and mouse state.", {}, []),
+    ("phone_use", "Switch to a phone (number from phone_status, name fragment, or address). Dials it; no touching the phone.",
+     {"device": {"type": ["string", "integer"]}}, ["device"]),
+    ("phone_type", "Type text on the phone's focused field. submit=true presses Enter after. ASCII only.",
+     {"text": {"type": "string"}, "submit": {"type": "boolean"}}, ["text"]),
+    ("phone_key", "Press a key or combo, e.g. 'enter', 'esc', 'cmd+h' (iOS Home), 'cmd+space' (Spotlight), 'cmd+tab', 'ctrl+c'. "
+                  "Pass 'keys' for a sequence.", {"key": {"type": "string"}, "keys": {"type": "array", "items": {"type": "string"}}}, []),
+    ("phone_tap", "Click at a position given as fractions of the phone screen (x,y in 0..1; 0,0 = top-left). "
+                  "Needs AssistiveTouch on the phone. Pointer position is estimated, so verify with phone_look.",
+     {"x": FR, "y": FR, "button": {"enum": ["left", "right", "middle"]}, "double": {"type": "boolean"}}, ["x", "y"]),
+    ("phone_scroll", "Scroll at an optional position.",
+     {"dir": {"enum": ["up", "down"]}, "amount": {"type": "integer"}, "x": FR, "y": FR}, ["dir"]),
+    ("phone_drag", "Press at (x1,y1), drag to (x2,y2), release. Fractions of the screen. Use for swipes.",
+     {"x1": FR, "y1": FR, "x2": FR, "y2": FR, "duration": {"type": "number"}}, ["x1", "y1", "x2", "y2"]),
+    ("phone_home_pointer", "Re-home the pointer to the top-left corner (fixes drift after many moves).", {}, []),
+    ("phone_look", "Take a photo of the phone screen from the webcam (pbsee; uses the camera linked to the active phone in the web console). Optionally wait `settle` seconds first so the "
+                   "screen has updated. Returns the image plus the change score. Stills are averaged over several frames to cut sensor noise; add 'avg=1' to disable.",
+     {"settle": {"type": "number"}, "camera": {"type": "string"}, "query": {"type": "string",
+      "description": "extra pbsee options, e.g. 'w=900&contrast'"}}, []),
+]
+
+
+def tool_call(name, a):
+    if name == "phone_status":
+        return [text(json.dumps(kb("/status"), indent=1))]
+    if name == "phone_use": return [text(json.dumps(kb("/use", {"device": a["device"]})))]
+    if name == "phone_type": return [text(json.dumps(kb("/type", {"text": a["text"], "submit": bool(a.get("submit"))})))]
+    if name == "phone_key":
+        if not (a.get("key") or a.get("keys")): raise RuntimeError("give key or keys")
+        return [text(json.dumps(kb("/key", {"keys": a["keys"]} if a.get("keys") else {"key": a["key"]})))]
+    if name == "phone_tap": return [text(json.dumps(kb("/click", a)))]
+    if name == "phone_scroll": return [text(json.dumps(kb("/scroll", a)))]
+    if name == "phone_drag": return [text(json.dumps(kb("/drag", a)))]
+    if name == "phone_home_pointer": return [text(json.dumps(kb("/home", {})))]
+    if name == "phone_look":
+        if a.get("settle"): time.sleep(min(float(a["settle"]), 10))
+        cam = pick_cam(a.get("camera"))
+        q = ("?" + a["query"].lstrip("?")) if a.get("query") else ""
+        img, ctype = http(f"{SB_URL}/snap/{urllib.parse.quote(cam)}.jpg{q}", None, cv_headers(), timeout=30)
+        info = ""
+        try: info = json.dumps(cv_json("/status"))[:600]
+        except Exception: pass
+        return [{"type": "image", "data": base64.b64encode(img).decode(), "mimeType": ctype or "image/jpeg"},
+                text(f"camera={cam} {info}")]
+    raise RuntimeError(f"unknown tool {name}")
+
+
+def text(t): return {"type": "text", "text": t}
+
+
+def handle(m):
+    """One JSON-RPC message -> reply dict (None for notifications). Used by stdio and by the hub's HTTP /mcp."""
+    method, i, p = m.get("method"), m.get("id"), m.get("params") or {}
+    if i is None: return None                                    # notifications need no reply
+    def ok(result): return {"jsonrpc": "2.0", "id": i, "result": result}
+    if method == "initialize":
+        return ok({"protocolVersion": p.get("protocolVersion", "2024-11-05"), "capabilities": {"tools": {"listChanged": False}},
+                   "serverInfo": {"name": "portabotty", "version": "1.0"},
+                   "instructions": "Drive an iPhone/iPad/computer over Bluetooth (keyboard+pointer) and look at it through a webcam. "
+                                   "Loop: act (phone_type/key/tap) -> phone_look with settle=1 -> decide. "
+                                   "The screen may show passwords; never type secrets you were not given."})
+    if method == "ping": return ok({})
+    if method == "tools/list":
+        return ok({"tools": [{"name": n, "description": d, "inputSchema": {"type": "object", "properties": pr, "required": req}}
+                             for n, d, pr, req in TOOLS]})
+    if method == "tools/call":
+        try: return ok({"content": tool_call(p.get("name"), p.get("arguments") or {})})
+        except Exception as e: return ok({"content": [text(str(e))], "isError": True})
+    return {"jsonrpc": "2.0", "id": i, "error": {"code": -32601, "message": f"method not found: {method}"}}
+
+
+def main_mcp():
+    for line in sys.stdin:
+        line = line.strip()
+        if not line: continue
+        try: m = json.loads(line)
+        except ValueError: continue
+        r = handle(m)
+        if r is not None:
+            sys.stdout.write(json.dumps(r) + "\n"); sys.stdout.flush()
+
+
+# ======================================================================
+# dispatch
+# ======================================================================
+def main():
+    argv = sys.argv[1:]
+    if "--install" in argv:
+        return install_launcher()
+    mode, rest = "kb", argv
+    if argv and argv[0] in ("kb", "key"): mode, rest = "kb", argv[1:]
+    elif argv and argv[0] in ("see", "cam"): mode, rest = "see", argv[1:]
+    elif argv and argv[0] == "mcp": mode, rest = "mcp", argv[1:]
+    elif argv and argv[0] == "web": mode, rest = "web", argv[1:]
+    sys.argv = [sys.argv[0]] + rest
+    {"kb": main_kb, "see": main_see, "mcp": main_mcp, "web": main_web}[mode]()
 
 
 if __name__ == "__main__":
