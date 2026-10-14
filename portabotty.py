@@ -1792,22 +1792,10 @@ def main_kb():
         elif not api_srv: app.web_url = "off (key API busy: another pbk running? sudo pkill -f '[p]ortabotty\\.py kb')"
         else:
             global KB_URL
-            wl, wp = argval("--web-listen", "0.0.0.0"), int(argval("--web-port", DB_PORT))
-            os.environ["PBKEY_TOKEN"] = tok; KB_URL = f"http://127.0.0.1:{port}"
-            try:
-                wtok = web_token(wl, argval("--web-token", ""))
-                web_srv = start_gateway(wl, wp, wtok)
-                app.web_link = app.web_url = web_url(wl, wp, wtok)
-                SEE["state"] = lambda: app.want_see
-                SEE["set"] = app.set_see
-                fw = firewall_hint(wp) if wl == "0.0.0.0" else ""
-                if fw: app.web_url += f"   (ufw blocks LAN: {fw})"
-                cfg = load_cfg()
-                ru, rt = argval("--relay", cfg.get("relay", "")), argval("--relay-token", cfg.get("relay_token", ""))
-                app.web_port, app.web_tok = wp, wtok
-                if ru and rt: app.start_hosting(ru.rstrip("/"), rt)
-            except OSError as e:
-                app.web_url = f"off ({e.strerror or e}: port {wp} busy? sudo pkill -f '[p]ortabotty\\.py kb')"
+            KB_URL = f"http://127.0.0.1:{port}"
+            os.environ["PBKEY_TOKEN"] = tok
+            web_srv, app.web_url, err = ensure_gateway(app)
+            if err: app.web_url = f"off ({err}: sudo pkill -f '[p]ortabotty\\.py kb')"
     loop = GLib.MainLoop()
     for sig in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
         signal.signal(sig, lambda *a: app.stop.set())
@@ -2408,6 +2396,39 @@ def start_gateway(listen, port, token):
     srv = ThreadingHTTPServer((listen, port), WebHandler); srv.daemon_threads = True
     threading.Thread(target=srv.serve_forever, daemon=True).start()
     return srv
+
+
+def ensure_gateway(app=None):
+    """Start the web Gateway (+MCP) if nothing is listening on its port yet - callable from Key or Cam,
+    whichever comes up first, so the Gateway is a baseline and not owned by either one specifically.
+    `app` (Key's App instance) is only given when called from kb mode, to wire the camera on/off switch
+    and relay hosting through it; called with app=None (from cam mode) it just gets the Gateway itself up.
+    Returns (srv_or_None, url, error_or_None); srv is None both when --no-web is set and when the
+    Gateway turned out to already be running elsewhere (not an error - that's the common case)."""
+    if "--no-web" in sys.argv:
+        return None, "", None
+    wl, wp = argval("--web-listen", "0.0.0.0"), int(argval("--web-port", DB_PORT))
+    wtok = web_token(wl, argval("--web-token", ""))
+    url = web_url(wl, wp, wtok)
+    srv, err = None, None
+    try:
+        srv = start_gateway(wl, wp, wtok)
+    except OSError as e:
+        if not port_open(f"http://127.0.0.1:{wp}"):
+            err = str(e)      # a real bind failure, not just "already running"
+    if app:
+        app.web_link = app.web_url = url
+        SEE["state"] = lambda: app.want_see
+        SEE["set"] = app.set_see
+        app.web_port, app.web_tok = wp, wtok
+        if srv:
+            cfg = load_cfg()
+            ru, rt = argval("--relay", cfg.get("relay", "")), argval("--relay-token", cfg.get("relay_token", ""))
+            if ru and rt: app.start_hosting(ru.rstrip("/"), rt)
+    if srv and wl == "0.0.0.0":
+        fw = firewall_hint(wp)
+        if fw: url += f"   (ufw blocks LAN: {fw})"
+    return srv, url, err
 
 
 # ---------------------------------------------------------------- start / urls
@@ -3202,13 +3223,15 @@ def start_server(a):
     State.reg, State.token = Registry(cfg, a.test_source), token
     State.reg.refresh()
     srv = ThreadingHTTPServer((listen, port), SeeHandler); srv.daemon_threads = True
-    return srv, listen, port, token
+    _, gw_url, _ = ensure_gateway()      # bring up the web Gateway+MCP baseline if Key hasn't already
+    return srv, listen, port, token, gw_url
 
 
 def cmd_serve(a):
-    srv, listen, port, token = start_server(a)
+    srv, listen, port, token, gw_url = start_server(a)
     found = ", ".join(c.name for c in State.reg.cams.values()) or "none yet (plug one in; `doctor` explains)"
     print(f"pbsee on http://{listen}:{port}/{'?t=' + token if token else ''}   cameras: {found}", flush=True)
+    if gw_url: print(f"web: {gw_url}", flush=True)
     try: srv.serve_forever()
     except KeyboardInterrupt: pass
     finally:
@@ -3248,9 +3271,10 @@ def state_line(st):
 
 def cmd_run(a):
     """Server + inline status lines (a line is printed only when the state changes)."""
-    srv, listen, port, token = start_server(a)
+    srv, listen, port, token, gw_url = start_server(a)
     threading.Thread(target=srv.serve_forever, daemon=True).start()
     print(f"http://{'localhost' if listen in ('127.0.0.1', '0.0.0.0') else listen}:{port}/" + (f"?t={token}" if token else ""), flush=True)
+    if gw_url: print(f"web: {gw_url}", flush=True)
     last = None
     try:
         while True:
@@ -3270,7 +3294,7 @@ def cmd_run(a):
 def cmd_screen(a):
     """Server + a full-screen status view: Live / idle / stopped per camera, and (optionally) the latest picture."""
     import termios, tty
-    srv, listen, port, token = start_server(a)
+    srv, listen, port, token, gw_url = start_server(a)
     threading.Thread(target=srv.serve_forever, daemon=True).start()
     kind = None if a.no_pic else graphics_kind()
     show_pic = kind is not None
@@ -3290,7 +3314,7 @@ def cmd_screen(a):
                 dot, word = state_line(st)
                 age = st.get("seconds_since_change")
                 lines.append(f"{dot} {word:<8}{st['name']}" + (f"  {st['fps']:.0f} fps  change {st['change']}" + (f"  {age:.0f}s" if age is not None else "") if word == "live" else ""))
-            lines += ["", url, "", ("p pic  " if kind else "") + "q quit"]
+            lines += ["", url] + ([f"web: {gw_url}"] if gw_url else []) + ["", ("p pic  " if kind else "") + "q quit"]
             sys.stdout.write("\x1b[H" + "".join(l + "\x1b[K\n" for l in lines) + "\x1b[J")
             if show_pic and sts and sts[0]["present"]:
                 try:
