@@ -471,7 +471,7 @@ def dev_path(addr):
 def trust(bus, path):
     try:
         dbus.Interface(bus.get_object("org.bluez", path), "org.freedesktop.DBus.Properties") \
-            .Set("org.bluez.Device1", "Trusted", dbus.Boolean(True))
+            .Set("org.bluez.Device1", "Trusted", dbus.Variant(dbus.Boolean(True)))
     except Exception as e:
         logging.warning(f"trust failed: {e}")
 
@@ -490,7 +490,7 @@ def bonds(bus):
 
 def set_prop(bus, name, val):
     dbus.Interface(bus.get_object("org.bluez", ADAPTER), "org.freedesktop.DBus.Properties") \
-        .Set("org.bluez.Adapter1", name, val)
+        .Set("org.bluez.Adapter1", name, dbus.Variant(val))
 
 
 class Agent(dbus.service.Object):
