@@ -8,52 +8,57 @@ as one of four modes (`portabotty.py <mode>`) and installed as five short comman
 
 | component | mode word(s) | commands | runs as |
 |---|---|---|---|
-| **Key** | `kb` / `key` (default) | `pb` / `pbk` / `pbkb` — brings up the whole app: terminal, local API, web gateway, and the camera | root |
-| **Cam** | `see` / `cam` / `c` | `pbs` / `pbc` | your user (`video` group) |
-| **Gateway** | `web` | started by Key in-process; rarely run standalone | — |
-| **MCP** | `mcp` | stdio, via `claude mcp add` | — |
+| **Key** | `kb` / `key` | `pb` / `pbk` / `pbkb` — the terminal + local API, and brings up the Gateway+MCP baseline and Cam too | root |
+| **Cam** | `see` / `cam` / `c` | `pbs` / `pbc` — camera capture, and also brings up the Gateway+MCP baseline if Key isn't already running it | your user (`video` group) |
+| **Gateway** | `web` | a baseline started by whichever of Key/Cam comes up first; rarely run standalone | — |
+| **MCP** | `mcp` | stdio, via `claude mcp add`; the Gateway's `/mcp` reaches the same tool logic in-process | — |
 
-## One app, one process — with one deliberate exception
+## One app. One process, except the one place that needs two.
 
 ```
-┌─ portabotty.py ── one OS process ─────────────────────────────────────────┐
-│                                                                            │
-│   ┌─ Key (mode kb) ──────────────┐     ┌─ Gateway (mode web) ───────────┐ │
-│   │ raw-tty terminal +            │────▶│ HTTP :8800: browser console   │ │
-│   │ BlueZ/D-Bus HID profile —      │ in- │ /mcp → calls MCP tool logic   │ │
-│   │ *is* the BT keyboard+mouse    │ proc│ directly, same process        │ │
-│   │ local API :8809               │ call│ proxies kb/*→:8809, sb/*→:8808│ │
-│   └──────────────┬─────────────────┘     └───────────────┬─────────────┘ │
-│                  │                                         │             │
-│                  │                          ┌─ MCP tool logic ──────────┐│
-│                  │                          │ phone_* tools: plain HTTP ││
-│                  │                          │ calls to :8809 / :8808.   ││
-│                  │                          │ Reached by mode mcp       ││
-│                  │                          │ (stdio) or Gateway's /mcp ││
-│                  │                          │ — same functions either  ││
-│                  │                          │ way.                      ││
-│                  │                          └───────────────────────────┘│
-└──────────────────┼────────────────────────────────────────────────────────┘
-                    │ subprocess.Popen — the ONE process boundary in the app
-                    ▼
-            ┌─ Cam (mode see/cam/c) ─────────────┐
-            │ separate OS process, your user     │
-            │ (video group, not root)            │
-            │ HTTP :8808, ffmpeg → MJPEG per cam  │
-            └─────────────────────────────────────┘
+┌─ portabotty.py — one bundled app ────────────────────────────────────────┐
+│                                                                          │
+│  ┌─ Key (mode kb) ────────────────────────────────────────────────────┐  │
+│  │ root, one OS process                                               │  │
+│  │ raw-tty terminal — *is* the BT keyboard+mouse                      │  │
+│  │ local API :8809                                                    │  │
+│  └────────────────────────────────────────────────────────────────────┘  │
+│                               same process                               │
+│                                    ▼                                     │
+│  ┌─ Gateway + MCP (mode web / mcp) ───────────────────────────────────┐  │
+│  │ HTTP :8800: browser console, /mcp, proxies to :8809 / :8808        │  │
+│  │ started by ensure_gateway() - whichever of Key/Cam comes up        │  │
+│  │ first; the other finds it already listening and skips              │  │
+│  └────────────────────────────────────────────────────────────────────┘  │
+│              separate process, started via ensure_gateway()              │
+│                                    ▲                                     │
+│  ┌─ Cam (mode see/cam/c) ─────────────────────────────────────────────┐  │
+│  │ your user, SEPARATE OS process (video group, not root)             │  │
+│  │ HTTP :8808, ffmpeg -> MJPEG per camera                             │  │
+│  └────────────────────────────────────────────────────────────────────┘  │
+│                                                                          │
+└──────────────────────────────────────────────────────────────────────────┘
 ```
 
 Key, Gateway, and MCP are one process with no boundary between them — the Gateway's `/mcp` handler calls
-the exact same tool-logic functions that mode `mcp` calls over stdio; no subprocess, no RPC. Cam is the
-one piece kept as a separate process, on purpose: a camera/ffmpeg crash or hang must not take the
-keyboard down with it, and camera capture only needs the `video` group, not root — folding it into Key's
-process would mean camera code running as root for no benefit. Every other part of the app already runs
-together; this is the one place where "separate" buys something real.
+the exact same tool-logic functions that mode `mcp` calls over stdio; no subprocess, no RPC. Cam is kept
+as a **separate OS process** — still fully part of the one app, just not the one process — because a
+camera/ffmpeg crash or hang must not take the keyboard down with it, and camera capture only needs the
+`video` group, not root; folding it into Key's process would mean camera code running as root for no
+benefit. That's the one place "separate" buys something real.
+
+The Gateway isn't owned by Key specifically: `ensure_gateway(app=None)` is the shared function both
+`main_kb()` and Cam's `start_server()` call. Whichever of Key or Cam starts first brings the Gateway up;
+the other finds it already listening (`port_open()` distinguishes "already running, fine" from a genuine
+bind failure) and skips starting a second one. Called from Key, `app` is also used to wire the camera
+on/off switch and relay hosting through the Gateway; called from Cam with no `App` instance, it just
+brings the Gateway itself up. So the web console + MCP work whether you run `pb`, or only ever run
+`pbs`/`pbc` and never `pb` at all.
 
 ## Key (default: `pb` / `pbk` / `pbkb`) — `main_kb()`
 
 The entry point that owns the process: sets up D-Bus, builds the `App`, starts the local API, the
-Gateway, and (via the terminal) Cam.
+Gateway (via `ensure_gateway()`), and (via the terminal) Cam.
 
 **Bluetooth setup**, done once at startup:
 - `reap_stale()` — kills any other running Key instance of this file (a stale one holds the BlueZ HID
@@ -94,12 +99,15 @@ idea what a menu or a terminal is — it only ever sees `(addr, bytes)`.
   known spot, calls `cal_snap()` to grab a frame from the linked camera, finds the pointer in the frame
   via `locate_pointer()` (pixel-diff blob detection), and adjusts `self.gx`/`self.gy` (the per-device
   mouse scale) until the pointer lands where it was aimed. Needs the camera's screen corners already
-  marked (`opts["warp"]` set) — see the Cam section below.
+  marked (`opts["warp"]` set) — see the Cam section below. The web console also auto-triggers the
+  corner-marking flow (`maybeAutoCal()`) the first time an uncalibrated camera is viewed.
 - `PadTracker` / `PointerSource` / `open_pointer_devices()` / `classify()` — server-side trackpad/mouse
   support: `PointerSource` is a thread per evdev device, feeding raw events into a `PadTracker` (per
   device, turns absolute touchpad coordinates or relative mouse deltas into `emit(dx, dy, wheel, btn)`
   calls), wired to `App.pad_emit()` → `send_mouse()`.
-- `start_see()` / `stop_see()` / `set_see(on)` / `toggle_see()` — Cam's lifecycle. `start_see()` does
+- `start_see()` / `stop_see()` / `set_see(on)` / `toggle_see()` — Cam's lifecycle. `start_see()` calls
+  `cam_autofix()` first (installs ffmpeg/v4l-utils/PIL/numpy, modprobe's `uvcvideo`, adds the user to
+  `video` — all without an interactive sudo prompt, since Key is already root), then
   `subprocess.Popen([sys.executable, __file__, "see", "serve"], ...)`, run as `SUDO_USER` (not root) if
   Key itself is root. `check_see()` polls `see_state()` once a second and prints a line only when it
   changes (`live`/`idle`/`stopped`).
@@ -113,11 +121,11 @@ bearer token and calls `app.api(method, path, body)` for every request. Listens 
 token in `.pbkey_token` (`load_token()`).
 
 **Startup sequence**: register D-Bus agent + HID profile → build `App` → start the local API
-(`make_api`) → start the Gateway in-process (`start_gateway()`) unless `--no-web` → run a
-`GLib.MainLoop()` (needed for the D-Bus mainloop), with `App.console()` or `App.headless()` running in a
-background thread depending on whether stdin is a tty.
+(`make_api`) → `ensure_gateway(app)` unless `--no-web` → run a `GLib.MainLoop()` (needed for the D-Bus
+mainloop), with `App.console()` or `App.headless()` running in a background thread depending on whether
+stdin is a tty.
 
-## Gateway (mode `web`) — `main_web()` / started in-process by Key
+## Gateway (mode `web`) — `main_web()` / started by `ensure_gateway()`
 
 **`WebHandler`** (`BaseHTTPRequestHandler`) serves everything on :8800 (`DB_PORT`):
 - `/` → the `CONSOLE` HTML/JS blob (the browser UI: device chips, live image, on-screen keyboard/
@@ -131,18 +139,20 @@ background thread depending on whether stdin is a tty.
 - `/mcp` → `_mcp()`: parses the JSON-RPC body and calls `handle()` (the MCP tool logic) directly — no
   subprocess, no extra HTTP hop, just a function call in the same process.
 - `/links` → reads/writes the device↔camera links stored in `portabotty.json` (`load_cfg()`/`save_cfg()`).
-- `/see`, `/viewonly` → toggle the camera (via the `SEE` dict Key wires up: `SEE["set"] = app.set_see`)
-  and the console's view-only flag.
+- `/see`, `/viewonly` → toggle the camera (via the `SEE` dict: wired to `app.set_see` when Key started
+  the Gateway; returns 501 "managed by PBKEY" if Cam started it alone, since there's no `App` to ask) and
+  the console's view-only flag.
 
-**`relay_agent(url, agent_token, port, local_token)`** — only runs if a relay is configured. A background
-thread that long-polls a PBRELAY server for queued browser/MCP requests and replays each one against
-`http://127.0.0.1:{port}` (this same Gateway), streaming the response back to the relay. This is how the
-web console stays reachable without opening an inbound port.
+**`ensure_gateway(app=None)`** — the shared starter described above. **`relay_agent(url, agent_token,
+port, local_token)`** — only runs if a relay is configured (via Key's `App.start_hosting()`). A
+background thread that long-polls a PBRELAY server for queued browser/MCP requests and replays each one
+against `http://127.0.0.1:{port}` (this same Gateway), streaming the response back to the relay.
 
 ## Cam (mode `see` / `cam` / `c`; commands `pbs` / `pbc`) — `main_see()`
 
 The one separate OS process in the app (why: see above). Runs as a normal user (the `video` group), not
-root.
+root. `start_server()` (shared by `serve`/`run`/`screen`) also calls `ensure_gateway()` after binding
+Cam's own HTTP server, so the Gateway comes up here too if Key hasn't already started it.
 
 **`Registry`** — `discover()` finds `/dev/video*` nodes via sysfs (no root needed), `match_entry()`
 matches each one against `pbsee.json` entries (by USB vid:pid, name, serial, or stable path), and
@@ -167,10 +177,13 @@ frames, restarting whenever the picture changes enough, used for snapshots and t
 processed frame, averaged by default), `/calibrate/<name>` (saves the 4 tapped corners as `opts["warp"]`
 via `Registry.save_opts()`), `/save/<name>` (rotate/tilt/contrast/... settings), `/focus/<name>`.
 
-**CLI subcommands** (`main_see()`'s argparse): `doctor [--fix]` checks/installs ffmpeg, v4l-utils, PIL,
-numpy, the `uvcvideo` module, and `video`-group membership, then runs a real capture test per camera;
-`list`/`probe` for discovery; `serve`/`run`/`screen` are the HTTP server with no/line/full-screen status
-output; `snap`/`install`/`install-service`.
+**`cam_autofix()`** — installs ffmpeg/v4l-utils/PIL/numpy, modprobe's `uvcvideo`, adds the user to the
+`video` group, as needed. Called from Key's `start_see()` before Cam's first start each session (no
+interactive sudo prompt - Key's already root); also what `doctor --fix` does interactively.
+
+**CLI subcommands** (`main_see()`'s argparse): `doctor [--fix]` runs the same checks as `cam_autofix()`
+plus a real per-camera capture test, printed verbosely; `list`/`probe` for discovery; `serve`/`run`/
+`screen` are the HTTP server with no/line/full-screen status output; `snap`/`install`/`install-service`.
 
 ## MCP — `main_mcp()`, and `WebHandler._mcp()`'s in-process call
 
