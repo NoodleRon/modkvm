@@ -3,10 +3,14 @@ Version 0.0.00001
 
 Your Linux server as a Bluetooth keyboard + mouse for phones, tablets and computers, plus a webcam view of their screens. Terminal, web page, or agent (MCP).
 
-| part | commands | job |
+One file (`portabotty.py`), four modes, installed as five commands:
+
+| mode | commands | job |
 |---|---|---|
-| **PBKEY** | `pb` · `pbk` · `pbkb` | the terminal: keyboard + mouse over Bluetooth, camera status, web link. Runs as root |
-| **PBSEE** | `pbs` · `pbc` | webcam server: live / idle / off, calibration. Optional: PBKEY starts it with `c` |
+| **kb** (default) | `pb` · `pbk` · `pbkb` | the terminal: keyboard + mouse over Bluetooth, camera status, web link. Runs as root |
+| **see** | `pbs` · `pbc` | webcam server, its own process on purpose: live / idle / off, calibration. kb mode starts it with `c` |
+| **mcp** | (stdio, via `claude mcp add`) | the same MCP tools as the web console's `/mcp`, over stdio |
+| **web** | (rarely run directly) | the web console + MCP-over-HTTP gateway; normally started in-process by kb mode |
 
 One inline terminal (`pb`). The web console and MCP are served by it; either part works without the other.
 
@@ -24,7 +28,7 @@ apt packages only; the code uses Python's standard library.
 | `qrencode` | QR code for the web link (optional) |
 | `sudo` | PBKEY runs as root |
 
-Also: Bluetooth adapter (USB 4.0+), `bluetoothd` started with `-P input`, `uvcvideo` module and your user in `video` for webcams (`python3 pbsee.py doctor --fix`), Python 3.8+. Clients: any modern browser; `claude` CLI for MCP.
+Also: Bluetooth adapter (USB 4.0+), `bluetoothd` started with `-P input`, `uvcvideo` module and your user in `video` for webcams (`python3 portabotty.py see doctor --fix`), Python 3.8+. Clients: any modern browser; `claude` CLI for MCP.
 
 ```
 ./install-deps.sh
@@ -35,9 +39,8 @@ Also: Bluetooth adapter (USB 4.0+), `bluetoothd` started with `-P input`, `uvcvi
 ```
 git clone https://github.com/noodleron/portabotty.git ~/portabotty && cd ~/portabotty
 ./install-deps.sh
-python3 pbsee.py doctor --fix      # re-login after
-sudo python3 pbkey.py --install   # pb pbk pbkb
-python3 pbsee.py install           # pbs pbc
+python3 portabotty.py see doctor --fix   # re-login after
+sudo python3 portabotty.py --install     # pb pbk pbkb pbs pbc, all pointed at this file
 pb
 ```
 Update: `cd ~/portabotty && git pull`.
@@ -63,7 +66,7 @@ Typing goes straight to the active device. `pb` prints, right under the command 
 | Enter | print the status block again |
 
 - **Mouse** is on by default. **Over SSH it is the pointer of the computer you SSH from** (terminal mouse; on when the terminal reports it, or is xterm-family; it disables text selection there). **At the server itself** a trackpad or USB mouse is captured automatically (the server's cursor freezes while captured): relative, lift-and-continue; tap = click, two-finger tap = right click, two-finger drag = scroll; `Ctrl+]` `t` toggles it. `--pad` forces the server's pad over SSH.
-- The target needs a pointer: iPhone/iPad show a round translucent dot once AssistiveTouch is on. If the pad does nothing: `sudo python3 pbkey.py --pads` lists input devices and counts live motion events (needs `python3-evdev`).
+- The target needs a pointer: iPhone/iPad show a round translucent dot once AssistiveTouch is on. If the pad does nothing: `sudo python3 portabotty.py --pads` lists input devices and counts live motion events (needs `python3-evdev`).
 - **Map** estimates position (HID is relative, targets accelerate); edges self-correct. Calibrate once per device with `Ctrl+]` `h` (needs the camera: AssistiveTouch on, the phone in view, its screen marked under Calibrate in the web console). Without a camera, `h` re-homes and `+` / `-` tune the size by eye.
 - Flags: `-v` (show start-up log lines), `--qr` (print a QR code for the web link), `--no-pad`, `--pad`, `--pads`, `--no-term-mouse`, `--no-mouse` (keyboard-only; re-pair), `--no-api`, `--api-port`, `--api-listen`, `--no-web`, `--web-port`, `--web-listen`, `--web-token`.
 - **Targets:** iPhone, iPad, Mac, Windows, Linux, Android. iPhone needs AssistiveTouch (Settings > Accessibility > Touch) for a pointer. Cmd = GUI/Win key. Keys are sent as a US layout. iOS caches the HID descriptor: after `--no-mouse`, forget the bond on both sides and re-pair.
@@ -97,10 +100,10 @@ pb --relay https://relay.example.com --relay-token AGENT_TOKEN   # saved; later 
 Browser and MCP: `https://relay.example.com/?t=ACCESS_TOKEN` (same pages, stream and `/mcp`). Shows "home server offline" when the server isn't connected.
 
 ## MCP
-Works with any MCP client: Streamable HTTP (`/mcp` on the web console, token as `?t=` or `Authorization: Bearer`) or stdio (`pbmcp.py`).
+Works with any MCP client: Streamable HTTP (`/mcp` on the web console, token as `?t=` or `Authorization: Bearer`) or stdio (`portabotty.py mcp`).
 ```
 claude mcp add --transport http portabotty http://SERVER:8800/mcp?t=<token>
-claude mcp add portabotty -- python3 ~/portabotty/pbmcp.py             # stdio alternative
+claude mcp add portabotty -- python3 ~/portabotty/portabotty.py mcp    # stdio alternative
 ```
 **Hermes Agent** (`~/.hermes/config.yaml`; `/reload-mcp` or restart, then `hermes mcp test portabotty`):
 ```yaml
@@ -113,7 +116,7 @@ mcp_servers:
 # or run it on the server itself, no token needed:
 #  portabotty:
 #    command: "python3"
-#    args: ["/home/you/portabotty/pbmcp.py"]
+#    args: ["/home/you/portabotty/portabotty.py", "mcp"]
 ```
 Tools appear as `mcp_portabotty_phone_*`; `phone_look` returns an image Hermes passes to vision models (text-only models get the file path). Optional skill that teaches the look-act-look loop: `cp -r skills/portabotty ~/.hermes/skills/` (also a standard `SKILL.md` for other agents).
 
@@ -125,5 +128,5 @@ The API types into your devices and the camera shows their screens: keep localho
 Next to the scripts: `.pbkey_state.json`, `.pbkey_token`, `pbsee.json`, `portabotty.json` (web token, relay).
 
 ## Recovery
-- "UUID already registered": another Key still holds the Bluetooth HID profile. Start-up now stops it (SIGKILL if it hangs), restarts Bluetooth and retries once by itself; by hand: `sudo pkill -9 -f "[p]bkey\.py"; sudo systemctl restart bluetooth`. Never Ctrl+Z.
+- "UUID already registered": another Key still holds the Bluetooth HID profile. Start-up now stops it (SIGKILL if it hangs), restarts Bluetooth and retries once by itself; by hand: `sudo pkill -9 -f "[p]ortabotty\.py kb"; sudo systemctl restart bluetooth`. Never Ctrl+Z.
 - Garbled terminal: `reset`. Camera: `pbs doctor`.
