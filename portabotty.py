@@ -3588,7 +3588,7 @@ def main():
         return install_launcher()
     mode, rest = "kb", argv
     if argv and argv[0] in ("kb", "key"): mode, rest = "kb", argv[1:]
-    elif argv and argv[0] in ("see", "cam"): mode, rest = "see", argv[1:]
+    elif argv and argv[0] in ("see", "cam", "c"): mode, rest = "see", argv[1:]
     elif argv and argv[0] == "mcp": mode, rest = "mcp", argv[1:]
     elif argv and argv[0] == "web": mode, rest = "web", argv[1:]
     sys.argv = [sys.argv[0]] + rest

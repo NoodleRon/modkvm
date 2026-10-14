@@ -1,126 +1,204 @@
 # Portabotty architecture
 
-## The actual design: the `pb` terminal
+Portabotty is one bundled application — a single file, `portabotty.py` — with four components, started
+as one of four modes (`portabotty.py <mode>`) and installed as five short commands by `--install`.
 
-Start with what was deliberately designed, not what's biggest in the diff. Portabotty began as a single
-script (`pbkey.py`) whose whole job was: *be a Bluetooth keyboard+mouse, controlled from one terminal
-session*. That terminal — the `pb` command, its status block, and the `Ctrl+]` menu — is the part that
-was iterated on as a piece of UX, not just grown to pass a test. Everything else (the web console, the
-camera, MCP) was built *around* that terminal afterward, as ways to reach the same device state from
-somewhere other than the terminal in front of it.
+> The terminal UI (the `pb` menu and keys below) is bespoke and intentionally designed, not incidental.
+> Don't change its behavior without a specific reason — ask first if a change isn't obviously required.
 
-So read the menu as the spec:
+| component | mode word(s) | commands | runs as |
+|---|---|---|---|
+| **Key** | `kb` / `key` (default) | `pb` / `pbk` / `pbkb` — brings up the whole app: terminal, local API, web gateway, and the camera | root |
+| **Cam** | `see` / `cam` / `c` | `pbs` / `pbc` | your user (`video` group) |
+| **Gateway** | `web` | started by Key in-process; rarely run standalone | — |
+| **MCP** | `mcp` | stdio, via `claude mcp add` | — |
 
-```
-Portabotty 0.0.00001: Ctrl+] for menu, then press [key]
-Web: <link>  |  hosted locally | [u] get paid hosting (coming soon)
-API: http://127.0.0.1:8809 | Token file: .pbkey_token
-  [1-9]  Device                   Address            Status
-* 1      Ismail's iPhone          AA:BB:CC:DD:EE:FF   ● connected
-
-  cam [c] ● live | calibrate [h]
-  keyboard [k] on | name [n] BTE Keyboard | solo [s] on
-  mouse [m] map [a] | trackpad [t] on
-  pair [p] | drop [d] | forget [f]
-  restart [r] | quit [q]
-```
-
-Nothing is pinned or redrawn — it's a normal scrolling terminal program. `Ctrl+]` + a key does the thing
-*and* prints only what changed (`Mouse off`, `Solo on`); `Ctrl+]` + Enter reprints the whole block. That
-economy — one keystroke to open a menu that never gets in the way of the typing it's layered on top of —
-is the thing to preserve if you're changing this code. The HID/D-Bus plumbing underneath is substantial,
-but it exists to make that terminal's promise true (every keystroke goes live to the phone), not the
-other way around.
-
-Everything below this point — one file, four modes, three local ports — is the "grown around it" layer:
-functional, but built more opportunistically than the terminal was.
-
-## One file, four modes
-
-As of this merge, `pbkey.py` + `portabotty.py` + `pbsee.py` + `pbmcp.py` are one file: `portabotty.py`.
-They used to find each other at runtime (`pbkey.py` doing `import portabotty as web` as an *optional*
-sibling file, `portabotty.py` doing `import pbmcp as mcp` per MCP request) — four files that only really
-made sense installed together, discovering each other by filename. That implicit coupling is now an
-explicit first argument:
+## One app, one process — with one deliberate exception
 
 ```
-portabotty.py            kb mode (default) — the terminal above. Runs as root.
-portabotty.py see ARGS   see mode  — camera server (doctor/list/probe/serve/run/screen/snap/install...)
-portabotty.py mcp        mcp mode  — stdio MCP server
-portabotty.py web ARGS   web mode  — the web console + MCP-over-HTTP gateway, standalone
+┌─ portabotty.py ── one OS process ─────────────────────────────────────────┐
+│                                                                            │
+│   ┌─ Key (mode kb) ──────────────┐     ┌─ Gateway (mode web) ───────────┐ │
+│   │ raw-tty terminal +            │────▶│ HTTP :8800: browser console   │ │
+│   │ BlueZ/D-Bus HID profile —      │ in- │ /mcp → calls MCP tool logic   │ │
+│   │ *is* the BT keyboard+mouse    │ proc│ directly, same process        │ │
+│   │ local API :8809               │ call│ proxies kb/*→:8809, sb/*→:8808│ │
+│   └──────────────┬─────────────────┘     └───────────────┬─────────────┘ │
+│                  │                                         │             │
+│                  │                          ┌─ MCP tool logic ──────────┐│
+│                  │                          │ phone_* tools: plain HTTP ││
+│                  │                          │ calls to :8809 / :8808.   ││
+│                  │                          │ Reached by mode mcp       ││
+│                  │                          │ (stdio) or Gateway's /mcp ││
+│                  │                          │ — same functions either  ││
+│                  │                          │ way.                      ││
+│                  │                          └───────────────────────────┘│
+└──────────────────┼────────────────────────────────────────────────────────┘
+                    │ subprocess.Popen — the ONE process boundary in the app
+                    ▼
+            ┌─ Cam (mode see/cam/c) ─────────────┐
+            │ separate OS process, your user     │
+            │ (video group, not root)            │
+            │ HTTP :8808, ffmpeg → MJPEG per cam  │
+            └─────────────────────────────────────┘
 ```
 
-`--install` (any mode) writes five launcher commands in `/usr/local/bin`, all pointed at this one file:
+Key, Gateway, and MCP are one process with no boundary between them — the Gateway's `/mcp` handler calls
+the exact same tool-logic functions that mode `mcp` calls over stdio; no subprocess, no RPC. Cam is the
+one piece kept as a separate process, on purpose: a camera/ffmpeg crash or hang must not take the
+keyboard down with it, and camera capture only needs the `video` group, not root — folding it into Key's
+process would mean camera code running as root for no benefit. Every other part of the app already runs
+together; this is the one place where "separate" buys something real.
 
-| command | mode | runs as |
-|---|---|---|
-| `pb` / `pbk` / `pbkb` | `kb` | root (re-execs via `sudo`) |
-| `pbs` / `pbc` | `see` | your normal user (`video` group) |
+## Key (default: `pb` / `pbk` / `pbkb`) — `main_kb()`
 
-```
-┌──────────────────────────────────────────────────────────────────────┐
-│  main_kb()   — the terminal above + BlueZ/D-Bus HID profile            │
-│  ─────────────────────────────────────────────────────────────────    │
-│  • raw-tty terminal UI = the actual Bluetooth keyboard+mouse device    │
-│  • local HTTP API on :8809 (token in .pbkey_token)                     │
-│  • calls start_gateway() directly, in a thread → :8800 (web+MCP)       │
-│  • spawns `python3 portabotty.py see serve` as a SEPARATE PROCESS      │
-└───────────────┬──────────────────────────────┬─────────────────────────┘
-                │ same process, same call        │ subprocess.Popen
-                ▼                                 ▼
-┌───────────────────────────────┐   ┌─────────────────────────────────┐
-│ main_web() / WebHandler         │   │ main_see() / SeeHandler          │
-│ ─────────────────────────────  │   │ ───────────────────────────────  │
-│ • HTTP on :8800: browser console│  │ • HTTP on :8808                  │
-│ • /mcp: calls handle() directly │   │ • ffmpeg → MJPEG per camera      │
-│ • proxies kb/* → :8809,          │   │ • idles a camera when unwatched │
-│   sb/* → :8808                  │   └───────────────────────────────┘
-└───────────────┬─────────────────┘
-                │ same process
-                ▼
-┌───────────────────────────────┐
-│ handle() / tool_call()  — MCP   │   phone_status/_use/_type/_key/_tap/
-│ tool logic, used two ways:      │   _scroll/_drag/_home_pointer/_look,
-│  1. main_mcp(): stdio loop      │   all implemented as plain HTTP calls
-│  2. called in-process by        │   to :8809 and :8808 — even when MCP
-│     WebHandler's /mcp            │   is reached via stdio, same file,
-└───────────────────────────────┘   same process.
-```
+The entry point that owns the process: sets up D-Bus, builds the `App`, starts the local API, the
+Gateway, and (via the terminal) Cam.
 
-Why `see` mode stays a separate **process** rather than folding in completely: a camera/ffmpeg crash or
-hang must not take down the keyboard, and it needs to run as your normal user (`video` group) rather
-than root. That isolation was a deliberate property of the old `pbsee.py` split and the merge keeps it —
-only the *file* boundary disappeared, not the *process* boundary. `kb`, `mcp`, and `web` modes, by
-contrast, had no such reason to be separate processes; they were separate *files* only because that's
-how the project grew, one capability at a time, each new piece finding the others by importing a
-sibling script. Collapsing those three into one file's call graph removes a layer of indirection without
-giving up anything that mattered.
+**Bluetooth setup**, done once at startup:
+- `reap_stale()` — kills any other running Key instance of this file (a stale one holds the BlueZ HID
+  profile and blocks re-registering it). Checks `/proc/<pid>/cmdline` for `portabotty.py` + mode word
+  `kb`, so it never touches a running Cam/MCP/Gateway process.
+- `set_prop(bus, name, val)` — sets an adapter property (`Powered`, `Alias`, `Discoverable`, ...) via
+  `org.freedesktop.DBus.Properties.Set`, passing `signature="ssv"` explicitly (the value isn't wrapped in
+  a `dbus.Variant` — that class isn't present in every `python3-dbus` build; the signature kwarg gets the
+  same marshalling without needing it).
+- `Agent` (`dbus.service.Object`) — BlueZ pairing agent (`RequestPinCode` → `"0000"`,
+  `RequestConfirmation` auto-accepts and calls `trust()`, `RequestPasskey`, etc.). Registered as the
+  system's default agent.
+- `Profile` (`dbus.service.Object`) — registers the HID service (`SDP_RECORD`, built from `KBD_DESC` +
+  `MOUSE_DESC`, the raw HID report descriptors) under `HID_UUID` so paired phones see a keyboard+mouse.
+- `trust(bus, path)` / `bonds(bus)` — mark a device trusted; list bonded (paired) devices from BlueZ's
+  object tree.
 
-`relay.py` (PBRELAY) stays a fully separate script on purpose: it's meant to run on a *different machine
-entirely* (a small public VM, reached when your server has no public IP), stdlib-only, with zero
-dependency on the rest of the code. There's no reason for that remote box to carry Bluetooth/dbus/camera
-code it will never execute.
+**`HID`** — the actual Bluetooth transport, independent of D-Bus. Binds two L2CAP sockets (`PSM_CTRL`,
+`PSM_INTR`), accepts inbound connections or dials out (`connect()`), and tracks one
+`{"ctrl": sock, "intr": sock}` pair per bonded address in `self.conns`. `press(addr, mod, key)` and
+`mouse(addr, buttons, dx, dy, wheel)` write raw HID report bytes to the `intr` socket. This class has no
+idea what a menu or a terminal is — it only ever sees `(addr, bytes)`.
 
-## Runtime picture (ports)
+**`App`** — everything else: current active device, solo/keyboard/mouse-on-off state (persisted via
+`load_state()`/`save_state()` to `.pbkey_state.json`), owns one `HID` instance.
+- `console()` — the main loop when stdin is a tty. Puts the tty in raw mode (`tty_raw()`), reads bytes
+  (`read()`), and on each chunk calls `handle()`.
+- `handle(fd, data)` — splits input at the menu hotkey (`MENU_KEY`, Ctrl+]), runs the rest through
+  `parse_input()` to get a list of events (`("key", mod, hidcode)`, `("mouse", buttons, x, y, pressed)`,
+  `("mode", ...)`, `("menu",)`, `("skip",)`), then for each event calls `self.hid.press()` (keys) or
+  accumulates/flushes mouse deltas into `send_mouse()`. A `("menu",)` event hands control to `menu()`.
+- `menu()` / `getkey()` — reads one key after Ctrl+] and dispatches it: `1-9` → `use()`, `p` → `pair()`,
+  `c` → `toggle_see()`, `h` → `calibrate()`, `n` → `rename_server()`, etc. — one method per menu key.
+- `send_mouse()` / `goto()` / `home()` — relative-mouse HID reports, with `goto()` additionally tracking
+  an *estimated* absolute position (`self.vpos`) so the web console's "map" mode and `calibrate()` can
+  reason about where the pointer probably is.
+- `calibrate()` / `fit_scale()` / `straighten()` — camera-assisted: homes the pointer, moves it to a
+  known spot, calls `cal_snap()` to grab a frame from the linked camera, finds the pointer in the frame
+  via `locate_pointer()` (pixel-diff blob detection), and adjusts `self.gx`/`self.gy` (the per-device
+  mouse scale) until the pointer lands where it was aimed. Needs the camera's screen corners already
+  marked (`opts["warp"]` set) — see the Cam section below.
+- `PadTracker` / `PointerSource` / `open_pointer_devices()` / `classify()` — server-side trackpad/mouse
+  support: `PointerSource` is a thread per evdev device, feeding raw events into a `PadTracker` (per
+  device, turns absolute touchpad coordinates or relative mouse deltas into `emit(dx, dy, wheel, btn)`
+  calls), wired to `App.pad_emit()` → `send_mouse()`.
+- `start_see()` / `stop_see()` / `set_see(on)` / `toggle_see()` — Cam's lifecycle. `start_see()` does
+  `subprocess.Popen([sys.executable, __file__, "see", "serve"], ...)`, run as `SUDO_USER` (not root) if
+  Key itself is root. `check_see()` polls `see_state()` once a second and prints a line only when it
+  changes (`live`/`idle`/`stopped`).
+- `api(method, path, body)` — the logic behind the local HTTP API (below): `/status`, `/type`, `/key`,
+  `/use`, `/click`, `/drag`, etc., each validating input and calling the same `HID`/`send_mouse`/`goto`
+  methods the terminal uses. This is the single place both the terminal and every HTTP/MCP caller funnel
+  through.
+
+**Local HTTP API** — `make_api(app, token, host, port)` builds a `BaseHTTPRequestHandler` that checks a
+bearer token and calls `app.api(method, path, body)` for every request. Listens on :8809 (`KB_PORT`),
+token in `.pbkey_token` (`load_token()`).
+
+**Startup sequence**: register D-Bus agent + HID profile → build `App` → start the local API
+(`make_api`) → start the Gateway in-process (`start_gateway()`) unless `--no-web` → run a
+`GLib.MainLoop()` (needed for the D-Bus mainloop), with `App.console()` or `App.headless()` running in a
+background thread depending on whether stdin is a tty.
+
+## Gateway (mode `web`) — `main_web()` / started in-process by Key
+
+**`WebHandler`** (`BaseHTTPRequestHandler`) serves everything on :8800 (`DB_PORT`):
+- `/` → the `CONSOLE` HTML/JS blob (the browser UI: device chips, live image, on-screen keyboard/
+  trackpad, the Link sheet for wiring devices to cameras) — a static string constant, no templating.
+- `/hub` → `hub_status()`: polls whether Key's API (:8809) and Cam's API (:8808) are up, camera
+  live/idle, returns it as JSON for the console's poll loop.
+- `/kb/<path>` → `_proxy()` forwards to `KB_URL` (:8809) with the kb token attached.
+- `/cams`, `/stream/<name>`, `/snap/<name>`, `/calibrate/<name>`, etc. → `_proxy()` forwards to `SB_URL`
+  (:8808) with the cam token attached. `_proxy()` streams multipart responses through unbuffered (for
+  the MJPEG live view).
+- `/mcp` → `_mcp()`: parses the JSON-RPC body and calls `handle()` (the MCP tool logic) directly — no
+  subprocess, no extra HTTP hop, just a function call in the same process.
+- `/links` → reads/writes the device↔camera links stored in `portabotty.json` (`load_cfg()`/`save_cfg()`).
+- `/see`, `/viewonly` → toggle the camera (via the `SEE` dict Key wires up: `SEE["set"] = app.set_see`)
+  and the console's view-only flag.
+
+**`relay_agent(url, agent_token, port, local_token)`** — only runs if a relay is configured. A background
+thread that long-polls a PBRELAY server for queued browser/MCP requests and replays each one against
+`http://127.0.0.1:{port}` (this same Gateway), streaming the response back to the relay. This is how the
+web console stays reachable without opening an inbound port.
+
+## Cam (mode `see` / `cam` / `c`; commands `pbs` / `pbc`) — `main_see()`
+
+The one separate OS process in the app (why: see above). Runs as a normal user (the `video` group), not
+root.
+
+**`Registry`** — `discover()` finds `/dev/video*` nodes via sysfs (no root needed), `match_entry()`
+matches each one against `pbsee.json` entries (by USB vid:pid, name, serial, or stable path), and
+`refresh()` keeps a `name -> Cam` dict current, creating/retiring `Cam` instances as cameras
+appear/disappear.
+
+**`Cam`** — one instance per camera. `_run()`/`_capture_once()` spawn `ffmpeg` (`BASE` + `_input()`,
+MJPEG passthrough when the camera supports it, falling back to `-c:v mjpeg` re-encode otherwise) only
+while `viewers > 0` (tracked via `acquire()`/`release()`), and stop it after `IDLE_STOP` seconds idle.
+`_publish()` stores the latest JPEG frame and notifies any threads waiting in `wait_frame()`. `_sample()`
+does cheap frame-diffing (`CHANGE_THRESHOLD`) to report a "has the screen changed" score. `focus(lock)`
+drives `v4l2-ctl` to freeze autofocus once it's settled.
+
+**`process(jpeg, o)`** — the image pipeline applied per-request (not baked into the stream): tilt
+(straighten a crooked camera) → perspective warp or crop (from the 4 tapped corners, `persp_coeffs()`) →
+rotate → contrast/gamma/sharpen → resize, all via PIL. `Denoiser` keeps a running mean of the last *n*
+frames, restarting whenever the picture changes enough, used for snapshots and the optional live-view
+"denoise" slider.
+
+**`SeeHandler`** serves :8808 (`SB_PORT`): `/cams` (`Registry.describe()`), `/status`
+(`Registry.status()`), `/stream/<name>` (MJPEG, calls `process()` per frame), `/snap/<name>` (one
+processed frame, averaged by default), `/calibrate/<name>` (saves the 4 tapped corners as `opts["warp"]`
+via `Registry.save_opts()`), `/save/<name>` (rotate/tilt/contrast/... settings), `/focus/<name>`.
+
+**CLI subcommands** (`main_see()`'s argparse): `doctor [--fix]` checks/installs ffmpeg, v4l-utils, PIL,
+numpy, the `uvcvideo` module, and `video`-group membership, then runs a real capture test per camera;
+`list`/`probe` for discovery; `serve`/`run`/`screen` are the HTTP server with no/line/full-screen status
+output; `snap`/`install`/`install-service`.
+
+## MCP — `main_mcp()`, and `WebHandler._mcp()`'s in-process call
+
+**`TOOLS`** declares the schema for each `phone_*` tool. **`tool_call(name, args)`** is the dispatch
+table: most tools call `kb(path, data)` (a plain HTTP POST/GET to `KB_URL`, i.e. Key's :8809 API —
+`phone_tap` → `kb("/click", args)`, `phone_type` → `kb("/type", args)`, etc.); `phone_look` instead calls
+`pick_cam()` (resolve which camera: explicit arg, else the one linked to the active device via
+`linked_cam()`, else the first camera reported) and fetches a snapshot from `SB_URL` (:8808). **`handle(m)`**
+wraps `tool_call()` in the JSON-RPC envelope MCP expects (`initialize`, `tools/list`, `tools/call`).
+
+## Ports
 
 | Port | Served by | Purpose |
 |---|---|---|
-| 8809 | `kb` mode | local API: device status, type/key/click/scroll, camera on/off |
-| 8808 | `see` mode | local API: camera list, MJPEG stream, snapshot, calibration |
-| 8800 | `web` mode (started in-process by `kb`) | public-facing: browser console + `/mcp`, proxies to 8809/8808 |
+| 8809 (`KB_PORT`) | Key's `make_api()` | device status, type/key/click/scroll, camera on/off |
+| 8808 (`SB_PORT`) | Cam's `SeeHandler` | camera list, MJPEG stream, snapshot, calibration |
+| 8800 (`DB_PORT`) | Gateway's `WebHandler` | browser console + `/mcp`, proxies to 8809/8808 |
 
-A phone/tablet/computer itself never talks HTTP — it only sees the Bluetooth HID device `kb` mode
+A phone/tablet/computer never talks HTTP — it only sees the Bluetooth HID device Key's `HID` class
 exposes via BlueZ. The HTTP ports are for *you* (browser, MCP agent, or the relay) to drive that device.
 
 ## Everything else in the repo
 
 | File/dir | What it is |
 |---|---|
+| `relay.py` | PBRELAY: a separate, stdlib-only script run on a *different* machine (a small public VM) so the Gateway is reachable without a public IP. Queues browser/MCP requests; the Gateway's `relay_agent()` thread dials out and drains the queue. No dependency on `portabotty.py`. |
 | `README.md` | User-facing docs: install, commands, web console, MCP tools |
 | `VERSION` | Plain string, read at startup to print the version |
-| `install-deps.sh` | One-line `apt install` for the system packages (bluez, ffmpeg, etc.) |
-| `skills/portabotty/SKILL.md` | Agent-facing instructions for Claude/Hermes on *how* to use the MCP tools (when to call `phone_look`, pitfalls like ASCII-only text entry) — not code, just a prompt |
-| `.gitignore` | Excludes the local secrets/state files written next to the script (`.pbkey_token`, `pbsee.json`, `portabotty.json`, `.pbkey_state.json`) |
-
-28 unused pip wheels (`mcp-2.3.0`, `pydantic`, `starlette`, `uvicorn`, `cryptography`, etc.) were
-previously committed at the repo root — a `pip download` artifact nothing in the code referenced. Removed.
+| `install-deps.sh` | `apt install` for the system packages (bluez, ffmpeg, etc.) |
+| `skills/portabotty/SKILL.md` | Agent-facing instructions for Claude/Hermes on *how* to use the MCP tools |
+| `.gitignore` | Local secrets/state the script writes next to itself (`.pbkey_token`, `pbsee.json`, `portabotty.json`, `.pbkey_state.json`) |
