@@ -465,6 +465,31 @@ def hyperlink_text(link, tail=""):
 atexit.register(tty_restore)
 
 
+def cam_autofix():
+    """Quietly do what `see doctor --fix` would do, before Cam's first start. Called from Key (root
+    already), so no interactive sudo prompt is needed - apt/modprobe/usermod just run directly. Cheap
+    and idempotent once fixed: a camera subprocess spawned after a usermod picks up the new group
+    immediately (fresh process, fresh group lookup), no logout/login needed. Returns what it changed,
+    or [] if nothing was."""
+    changed = []
+    sudo = [] if os.geteuid() == 0 else ["sudo"]
+    pkgs = [p for p, have in (("ffmpeg", shutil.which("ffmpeg")), ("v4l-utils", shutil.which("v4l2-ctl"))) if not have]
+    for mod, pkg in (("PIL", "python3-pil"), ("numpy", "python3-numpy")):
+        try: __import__(mod)
+        except ImportError: pkgs.append(pkg)
+    if pkgs:
+        subprocess.run(sudo + ["apt-get", "install", "-y"] + pkgs, capture_output=True)
+        changed.append(", ".join(pkgs))
+    if usb_video_devices() and not os.path.isdir(f"{SYSFS}/module/uvcvideo"):
+        subprocess.run(sudo + ["modprobe", "uvcvideo"], capture_output=True)
+        changed.append("uvcvideo driver")
+    user = os.environ.get("SUDO_USER") or getpass.getuser()
+    if "video" not in run(["id", "-nG", user]).split():
+        subprocess.run(sudo + ["usermod", "-aG", "video", user], capture_output=True)
+        changed.append(f"added {user} to the video group")
+    return changed
+
+
 # ---------------------------------------------------------------- state / bluez helpers
 def load_state():
     try:
@@ -1181,6 +1206,8 @@ class App:
     def start_see(self, quiet=False):
         if self.see_running() or port_open(SB_URL):
             return True                                                # already up (here or in another terminal)
+        fixed = cam_autofix()
+        if fixed: say("Cam: fixed " + ", ".join(fixed))
         cmd = [sys.executable, os.path.abspath(__file__), "see", "serve"]
         if os.geteuid() == 0 and os.environ.get("SUDO_USER"):
             cmd = ["sudo", "-u", os.environ["SUDO_USER"]] + cmd       # the camera needs the video group, not root
@@ -1987,7 +2014,7 @@ let vo=false;const INP=new Set(['type','key','goto','click','scroll','drag','mov
 const send=(p,b)=>vo&&INP.has(p)?Promise.resolve({ok:false}):chain=chain.then(()=>raw(p,b));
 const post=(p,b)=>fetch(U(p),{method:'POST',body:JSON.stringify(b||{})}).then(r=>r.json()).catch(()=>({}));
 // ---- state
-let hub={},devs=[],cams=[],links={},viewCam=ls.get('view')||'',lastActive=null,sel=null,expanded=new Set(),sig='',nonce=0,tick=0,camKey='',cal=null,shownKey='';
+let hub={},devs=[],cams=[],links={},viewCam=ls.get('view')||'',lastActive=null,sel=null,expanded=new Set(),sig='',nonce=0,tick=0,camKey='',cal=null,autoCalDone=new Set();
 const esc=s=>String(s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 const camOf=n=>cams.find(c=>c.name===n),devOf=a=>devs.find(d=>d.addr===a);
 function chips(){
@@ -2002,7 +2029,7 @@ function poll(){
   $('kbi').className='pill'+(h.kb?' up':'');$('sbi').className='pill'+(h.sb?(h.cam==='live'?' up':' idle'):'');
   if(s.pointer&&!cal){$('ptr').style.cssText='display:block;left:'+s.pointer[0]*100+'%;top:'+s.pointer[1]*100+'%'}else $('ptr').style.display='none';
   if(s.active!==lastActive){lastActive=s.active;if(links[s.active]){viewCam=links[s.active];ls.set('view',viewCam)}}
-  const done=()=>{chips();stream();placeholder();render()};
+  const done=()=>{chips();stream();placeholder();render();maybeAutoCal()};
   if(h.sb&&(!cams.length||tick++%4===0)){fetch(U('/cams')).then(r=>r.json()).then(c=>{cams=c;if(!camOf(viewCam)||!camOf(viewCam).present){const p=cams.find(x=>x.present)||cams[0];viewCam=p?p.name:''}done()}).catch(done)}
   else{if(!h.sb)cams=[];done()}
  }).catch(()=>{$('kbi').className=$('sbi').className='pill'})}
@@ -2054,6 +2081,12 @@ $('stage').addEventListener('pointerup',e=>{if(cal)return calPt(e);end(e)});$('s
 $('stage').addEventListener('contextmenu',e=>e.preventDefault());
 $('stage').addEventListener('wheel',e=>{e.preventDefault();scroll(e.deltaY)},{passive:false});
 // ---- calibrate (inline)
+function maybeAutoCal(){
+  if(cal||!hub.sb||autoCalDone.has(viewCam))return;
+  const c=camOf(viewCam);if(!c||!c.present)return;
+  const o=c.opts||{};if(o.warp||o.crop)return;
+  autoCalDone.add(viewCam);startCal();
+}
 function startCal(){const c=camOf(viewCam);if(!c)return;closeSheet();cal={name:viewCam,pts:[]};
   $('stage').classList.add('cal');$('calbar').classList.add('on');$('ct').textContent='Tap screen corners: top-left, top-right, bottom-right, bottom-left';
   $('cam').src=U('/stream/'+encodeURIComponent(viewCam)+'?raw=1&w=960&_='+Date.now())}
