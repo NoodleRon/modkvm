@@ -35,6 +35,21 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import dbus, dbus.service, dbus.mainloop.glib
 from gi.repository import GLib
 
+CLIENT_DISCONNECTS = (BrokenPipeError, ConnectionResetError, ConnectionAbortedError, socket.timeout)
+
+
+class QuietHTTPHandler(BaseHTTPRequestHandler):
+    """A browser canceling a request is routine; application errors still reach the server log."""
+    def handle(self):
+        try: super().handle()
+        except CLIENT_DISCONNECTS: pass
+
+    def _client_gone(self):
+        try:
+            ready, _, _ = select.select([self.connection], [], [], 0)
+            return bool(ready) and not self.connection.recv(1, socket.MSG_PEEK)
+        except (OSError, ValueError): return True
+
 HERE = os.path.dirname(os.path.abspath(__file__))
 
 logging.basicConfig(level=logging.INFO if ("-v" in sys.argv or "--verbose" in sys.argv) else logging.WARNING, format="%(asctime)s [%(levelname)s] %(message)s")
@@ -1592,7 +1607,7 @@ class ApiError(Exception):
 
 
 def make_api(app, token, host, port):
-    class H(BaseHTTPRequestHandler):
+    class H(QuietHTTPHandler):
         def log_message(self, *a): pass
 
         def _out(self, code, obj):
@@ -1619,6 +1634,8 @@ def make_api(app, token, host, port):
                 with app.api_lock:
                     res = app.api(method, path, body)
                 self._out(200, dict(res, ok=True))
+            except CLIENT_DISCONNECTS:
+                return                                  # do not try to send a 500 to a departed client
             except ApiError as e:
                 self._out(e.code, {"ok": False, "error": str(e)})
             except (ValueError, KeyError, TypeError) as e:
@@ -2093,31 +2110,42 @@ addEventListener('pagehide',()=>stopSharing());
 document.addEventListener('visibilitychange',()=>{if(document.hidden&&localShare)stopSharing('Sharing stopped because this page was hidden; start again when ready')});
 // ---- state
 let hub={},devs=[],cams=[],links={},viewCam=ls.get('view')||'',lastActive=null,sel=null,expanded=new Set(),sig='',nonce=0,tick=0,camKey='',cal=null,autoCalDone=new Set();
+let pollPending=null,pollAgain=false,pollEpoch=0;
 const esc=s=>String(s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 const camOf=n=>cams.find(c=>c.name===n),devOf=a=>devs.find(d=>d.addr===a);
 function chips(){
-  const el=$('dev');el.textContent='';
-  devs.forEach(d=>{const b=document.createElement('button');b.className='chip'+(d.connected?' up':'')+(d.active?' act':'');
-    const c=links[d.addr];b.innerHTML='<i class=dot></i><span>'+esc(d.name)+'</span>'+(c?'<small>'+esc(c)+'</small>':'');
-    b.onclick=()=>send('use',{device:d.n}).then(poll);el.append(b)});
+  const el=$('dev'),old=Array.from(el.children),kept=new Set();
+  devs.forEach((d,i)=>{const b=old.find(n=>n.dataset.addr===d.addr)||document.createElement('button');b.dataset.addr=d.addr;kept.add(b);
+    b.className='chip'+(d.connected?' up':'')+(d.active?' act':'');
+    const c=links[d.addr],label='<i class=dot></i><span>'+esc(d.name)+'</span>'+(c?'<small>'+esc(c)+'</small>':'');if(b.innerHTML!==label)b.innerHTML=label;
+    b.onclick=()=>{pollEpoch++;return send('use',{device:d.addr}).then(poll)};
+    if(el.children[i]!==b)el.insertBefore(b,el.children[i]||null)});
+  old.forEach(b=>{if(!kept.has(b))b.remove()});
 }
 function poll(){
-  fetch(U('/hub')).then(r=>r.json()).then(h=>{
+  if(pollPending){pollAgain=true;return pollPending}
+  const epoch=pollEpoch,abort=new AbortController(),timer=setTimeout(()=>abort.abort(),10000);
+  pollPending=fetch(U('/hub'),{signal:abort.signal}).then(r=>r.json()).then(h=>{
+  if(epoch!==pollEpoch)return;
   hub=h;cameraSetupStatus();vo=!!h.viewonly;document.body.classList.toggle('vo',vo);$('vo').classList.toggle('on',vo);dockSize();const s=h.status||{};devs=s.devices||[];links=h.links||{};if(s.name&&s.name!==$('brand').textContent){$('brand').textContent=s.name;document.title=s.name}
   $('kbi').className='pill'+(h.kb?' up':'');$('sbi').className='pill'+(h.sb?(h.cam==='live'?' up':' idle'):'');
   if(s.pointer&&!cal){$('ptr').style.cssText='display:block;left:'+s.pointer[0]*100+'%;top:'+s.pointer[1]*100+'%'}else $('ptr').style.display='none';
   if(s.active!==lastActive){lastActive=s.active;if(links[s.active]){viewCam=links[s.active];ls.set('view',viewCam)}}
-  const done=()=>{chips();stream();placeholder();render();maybeAutoCal()};
-  if(h.sb&&(!cams.length||tick++%4===0)){fetch(U('/cams')).then(r=>r.json()).then(c=>{cams=c;if(!camOf(viewCam)||(!camOf(viewCam).present&&camOf(viewCam).source!=='remote')){const p=cams.find(x=>x.present)||cams[0];viewCam=p?p.name:''}done()}).catch(done)}
+  const done=()=>{if(epoch!==pollEpoch)return;chips();stream();placeholder();render();maybeAutoCal()};
+  if(h.sb&&(!cams.length||tick++%4===0)){return fetch(U('/cams'),{signal:abort.signal}).then(r=>r.json()).then(c=>{if(epoch!==pollEpoch)return;cams=c;if(!camOf(viewCam)||(!camOf(viewCam).present&&camOf(viewCam).source!=='remote')){const p=cams.find(x=>x.present)||cams[0];viewCam=p?p.name:''}done()}).catch(done)}
   else{if(!h.sb)cams=[];done()}
- }).catch(()=>{$('kbi').className=$('sbi').className='pill'})}
+ }).catch(()=>{if(epoch===pollEpoch)$('kbi').className=$('sbi').className='pill'}).finally(()=>{
+   clearTimeout(timer);pollPending=null;if(pollAgain){pollAgain=false;poll()}
+ });return pollPending}
 function stream(force){
   if(cal)return;const c=camOf(viewCam),o=c&&c.opts||{};
   const key=hub.sb&&c&&c.present?viewCam+'|'+JSON.stringify(o)+'|'+nonce:'';
   if(key===camKey&&!force)return;camKey=key;
-  if(key)$('cam').src=U('/stream/'+encodeURIComponent(viewCam)+'?_='+nonce);else $('cam').removeAttribute('src');
+  const old=$('cam'),img=document.createElement('img');img.id='cam';img.alt='';
+  img.onerror=()=>{if($('cam')!==img)return;camKey='';img.removeAttribute('src')};
+  old.onerror=null;old.removeAttribute('src');old.replaceWith(img);
+  if(key)img.src=U('/stream/'+encodeURIComponent(viewCam)+'?_='+nonce);
 }
-$('cam').onerror=()=>{camKey='';$('cam').removeAttribute('src')};
 function placeholder(){
   let t='',b=false;
   if(!hub.kb&&!hub.sb)t='offline';
@@ -2368,7 +2396,7 @@ def locked_out(ip, limit=8, window=60):
     return len(FAILS[ip]) >= limit
 
 
-class WebHandler(BaseHTTPRequestHandler):
+class WebHandler(QuietHTTPHandler):
     server_version = "portabotty"
     def log_message(self, *a): pass
 
@@ -2404,12 +2432,26 @@ class WebHandler(BaseHTTPRequestHandler):
             with e: return self._send(e.code, e.read(), e.headers.get("Content-Type", "application/json"))
         except OSError:
             return self._json({"ok": False, "error": "stopped"}, 502)
+        stop_watch, watcher = threading.Event(), None
         try:
             ctype = r.headers.get("Content-Type", "application/octet-stream")
             if ctype.startswith("multipart"):                                     # live stream: pass bytes through
+                # read1 can block while the source has no frames. A duplicated socket lets the
+                # watcher interrupt that read on browser cancellation, without urllib internals.
+                upstream = socket.socket(fileno=os.dup(r.fileno()))
+                def watch_client():
+                    try:
+                        while not stop_watch.wait(.25):
+                            if self._client_gone():
+                                try: upstream.shutdown(socket.SHUT_RDWR)
+                                except OSError: pass
+                                return
+                    finally: upstream.close()
+                watcher = threading.Thread(target=watch_client, daemon=True); watcher.start()
                 self.send_response(200); self.send_header("Content-Type", ctype)
                 self.send_header("Cache-Control", "no-store"); self.end_headers()
                 while True:
+                    if self._client_gone(): break
                     chunk = r.read1(65536)
                     if not chunk: break
                     self.wfile.write(chunk); self.wfile.flush()
@@ -2418,7 +2460,9 @@ class WebHandler(BaseHTTPRequestHandler):
         except (BrokenPipeError, ConnectionResetError, OSError):
             pass
         finally:
+            stop_watch.set()
             r.close()                                                             # lets pbsee stop an unwatched camera
+            if watcher: watcher.join(.5)
 
     def _mcp(self):
         """MCP over HTTP (JSON-RPC in a POST): the same tools as the stdio adapter, run in this process."""
@@ -3341,7 +3385,7 @@ class State:
     reg = None
     token = ""
 
-class SeeHandler(BaseHTTPRequestHandler):
+class SeeHandler(QuietHTTPHandler):
     server_version = "pbsee"
     def log_message(self, *a): pass
 
@@ -3479,7 +3523,9 @@ class SeeHandler(BaseHTTPRequestHandler):
             seq, last, dt = 0, 0.0, (1.0 / o["fps"] if o.get("fps") else 0.0)
             dn = Denoiser(o["avg"]) if int(o.get("avg") or 1) > 1 else None
             while True:
-                seq2, jpg = cam.wait_frame(seq, 5)
+                if self._client_gone(): break
+                seq2, jpg = cam.wait_frame(seq, 1)
+                if self._client_gone(): break
                 if isinstance(cam, RemoteCam) and (not cam.present or publisher != cam.publisher): break
                 if jpg is None: continue
                 seq = seq2

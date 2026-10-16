@@ -109,6 +109,7 @@ test('polling preserves a selected disconnected remote view; it resumes on the s
     {name:'remote-laptop-camera',source:'remote',present:false}
   ]});
   Object.assign(h.ctx,{cams:[],viewCam:'remote-laptop-camera',devs:[],links:{},vo:false,lastActive:undefined,cal:null,
+    pollPending:null,pollAgain:false,pollEpoch:0,
     camOf:n=>h.ctx.cams.find(c=>c.name===n),dockSize(){},chips(){},stream(){},placeholder(){},render(){},maybeAutoCal(){}});
   for(const id of ['vo','kbi','sbi','ptr']){
     const el=h.$(id);el.classList={toggle(){}};el.style={};
