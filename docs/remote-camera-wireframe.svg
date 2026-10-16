@@ -1,0 +1,74 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="860" viewBox="0 0 1200 860" role="img" aria-labelledby="title desc">
+  <title id="title">Portabotty browser camera hookup</title>
+  <desc id="desc">A sharing browser sends a voluntary camera feed through SSH or HTTPS to the Portabotty server and harness. Its remote camera appears in the existing Link and Views list. Keyboard and pointer commands still go through server Bluetooth. A visible Stop sharing control ends capture.</desc>
+  <defs>
+    <marker id="arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0 0L8 4L0 8" fill="none" stroke="#7ba5d8" stroke-width="1.5"/></marker>
+    <style>text{font-family:-apple-system,BlinkMacSystemFont,Segoe UI,Arial,sans-serif;fill:#e8edf5}.dim{fill:#a9b6c7}.label{font-size:12px;letter-spacing:1.5px;font-weight:700}.body{font-size:17px}.small{font-size:14px}.title{font-size:29px;font-weight:700}.box{fill:#142132;stroke:#34465c;stroke-width:1.5}.wire{fill:none;stroke:#7ba5d8;stroke-width:2;marker-end:url(#arrow)}</style>
+  </defs>
+  <rect width="1200" height="860" rx="20" fill="#0b1421"/>
+  <text x="40" y="52" class="label dim">PORTABOTTY · CAMERA FROM ANOTHER COMPUTER</text>
+  <text x="40" y="94" class="title">Your webcam joins the existing Views list.</text>
+  <text x="40" y="125" class="body dim">The server stays the keyboard and pointer harness. Capture starts only with your click and permission.</text>
+
+  <rect x="40" y="161" width="340" height="185" rx="14" class="box"/>
+  <text x="60" y="189" class="label dim">1 · SHARING COMPUTER</text>
+  <text x="60" y="223" class="body">Built-in / USB camera</text>
+  <text x="60" y="250" class="body">Browser opens authenticated controller</text>
+  <text x="60" y="279" class="small dim">Click Share → grant camera permission</text>
+  <text x="60" y="305" class="small dim">Video only · keep source tab visible</text>
+  <text x="60" y="330" class="small dim">No automatic or background restart</text>
+
+  <rect x="460" y="161" width="360" height="185" rx="14" class="box"/>
+  <text x="480" y="189" class="label dim">2 · SERVER / HARNESS</text>
+  <text x="480" y="223" class="body">Existing gateway + PBSEE registry</text>
+  <text x="480" y="250" class="body">Existing PBKEY keyboard / pointer</text>
+  <text x="480" y="279" class="small dim">Remote camera opt-in must be enabled</text>
+  <text x="480" y="305" class="small dim">Same /cams, stream, snap and device links</text>
+  <text x="480" y="330" class="small dim">No new public camera listener</text>
+
+  <rect x="900" y="161" width="260" height="185" rx="14" class="box"/>
+  <text x="920" y="189" class="label dim">3 · PAIRED TARGET</text>
+  <text x="920" y="223" class="body">Phone / tablet / computer</text>
+  <text x="920" y="252" class="small dim">Receives Bluetooth input</text>
+  <text x="920" y="280" class="small dim">Screen is in camera's view</text>
+  <text x="920" y="307" class="small dim">Existing pairing is preserved</text>
+
+  <path d="M380 225H449" class="wire"/><text x="394" y="207" class="small dim">SSH / TLS</text>
+  <path d="M820 268H889" class="wire"/><text x="834" y="250" class="small dim">Bluetooth</text>
+  <text x="40" y="391" class="label dim">CONTROLLER WIREFRAME · SAME PAGE / SAME LIST</text>
+
+  <rect x="40" y="410" width="1120" height="360" rx="14" class="box"/>
+  <path d="M40 465H1160" stroke="#34465c"/>
+  <text x="62" y="445" class="body" font-weight="700">Portabotty</text>
+  <text x="193" y="445" class="small dim">key ●  see ●</text>
+  <rect x="963" y="422" width="174" height="32" rx="8" fill="#21456e"/>
+  <text x="986" y="444" class="body">Link / Camera</text>
+  <rect x="60" y="485" width="400" height="260" rx="10" fill="#0b1421" stroke="#34465c"/>
+  <text x="80" y="514" class="label dim">VISUAL FEEDBACK</text>
+  <rect x="80" y="533" width="360" height="145" rx="8" fill="#192a40" stroke="#546b88" stroke-dasharray="6 6"/>
+  <text x="141" y="600" class="body">Selected remote camera image</text>
+  <text x="140" y="625" class="small dim">Existing pointer / keyboard controller</text>
+  <rect x="80" y="695" width="360" height="34" rx="7" fill="#41303a"/>
+  <text x="93" y="717" class="small">Sharing Laptop camera</text>
+  <rect x="303" y="700" width="124" height="24" rx="5" fill="#8e414b"/>
+  <text x="319" y="717" class="small">Stop sharing</text>
+
+  <text x="492" y="509" class="body" font-weight="700">Link sheet</text>
+  <rect x="492" y="525" width="182" height="36" rx="7" fill="#1b2c42" stroke="#546b88"/>
+  <text x="505" y="548" class="small">Name: Laptop camera</text>
+  <rect x="689" y="525" width="445" height="36" rx="7" fill="#21456e"/>
+  <text x="718" y="548" class="body">Share this computer's camera</text>
+  <text x="493" y="586" class="small dim">Status: ready / disabled / older server / HTTPS required</text>
+  <text x="493" y="620" class="label dim">DEVICES</text>
+  <text x="822" y="620" class="label dim">VIEWS · EXISTING CAMERA LIST</text>
+  <rect x="492" y="633" width="225" height="42" rx="7" fill="#1b2c42" stroke="#546b88"/>
+  <text x="507" y="660" class="body">Paired phone</text>
+  <rect x="822" y="633" width="312" height="42" rx="7" fill="#21456e" stroke="#7ba5d8"/>
+  <text x="838" y="660" class="body">Laptop camera · remote</text>
+  <path d="M717 654H811" class="wire"/>
+  <rect x="822" y="687" width="312" height="36" rx="7" fill="#1b2c42" stroke="#546b88"/>
+  <text x="838" y="711" class="small dim">Server-local camera · retained</text>
+  <text x="492" y="737" class="small dim">Select / link a row. Remote row also provides Stop remote camera.</text>
+  <text x="40" y="805" class="small dim">Requirements: updated server processes + remote_cameras opt-in + authenticated HTTPS or SSH localhost tunnel.</text>
+  <text x="40" y="832" class="small dim">Illustrative wireframe, not a live-camera test. Hiding the source tab stops capture; disconnect expires within 15 seconds.</text>
+</svg>

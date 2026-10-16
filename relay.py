@@ -70,13 +70,21 @@ class H(BaseHTTPRequestHandler):
         if not ok(given, TOKEN):
             if given: FAILS.setdefault(ip, []).append(time.time())
             return self._send(401, b"token required (?t=...)")
+        if u.path.startswith("/remote/"):
+            # Remote capture only through a local TLS proxy/tunnel, never a bare public HTTP listener.
+            origin = urllib.parse.urlparse(self.headers.get("Origin", ""))
+            if (ip not in ("127.0.0.1", "::1") or self.headers.get("Sec-Fetch-Site") == "cross-site" or
+                    (origin.geturl() and (origin.scheme not in ("https", "http") or
+                     origin.netloc.lower() != self.headers.get("Host", "").lower()))):
+                return self._send(403, b"remote cameras require a local HTTPS proxy or SSH tunnel")
         if u.path == "/_relay": return self._send(200, json.dumps({"agent": time.time() - LAST_SEEN[0] < 60}).encode(), "application/json")
         if time.time() - LAST_SEEN[0] > 60: return self._send(503, b"home server offline")
         qs.pop("t", None)
         rid = secrets.token_hex(8); q = queue.Queue(); REPLY[rid] = q
         body = self._body() if method == "POST" else b""
         INBOX.put({"id": rid, "method": method, "path": u.path, "query": urllib.parse.urlencode(qs, doseq=True),
-                   "ctype": self.headers.get("Content-Type", ""), "body": base64.b64encode(body).decode()})
+                   "ctype": self.headers.get("Content-Type", ""), "body": base64.b64encode(body).decode(),
+                   "camera_token": self.headers.get("X-PB-Camera", "")[:128] if u.path.startswith("/remote/") else ""})
         try:
             try: head = q.get(timeout=30)
             except queue.Empty: return self._send(504, b"no answer from home server")

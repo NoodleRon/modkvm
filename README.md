@@ -80,6 +80,31 @@ Typing goes straight to the active device. `pb` prints, right under the command 
 
 Cameras are data: `pbsee.json`, one entry per camera (`match`: `usb:VID:PID` / `name:` / `serial:` / `path:`; `size`, `fps`, `controls`, `opts`); `pbs probe` writes it. Localhost-only by default; beyond that a token is required.
 
+### Camera on another computer
+
+[Hookup wireframe and missing-button troubleshooting](docs/REMOTE-CAMERA-HOOKUP.md). The controller now labels its existing Link button **Link / Camera** and reports web/camera build IDs in that sheet. An authenticated `/version` check identifies the loaded gateway without opening a camera.
+
+A computer with a browser can voluntarily share its **camera** into the existing **Link → Views** list. It uses the same live view, device links, calibration, snapshots and MCP `phone_look` as a server-local camera. Keyboard/pointer input continues through PBKEY and Bluetooth as before. The browser's normal camera chooser/site settings select the source camera; audio and screen capture are never requested.
+
+1. On the Portabotty server, merge `"remote_cameras": true` into the existing `pbsee.json` object (keep its camera settings), then restart the camera process. When PBKEY manages Cam, toggle its camera off/on. This option is **off by default**. Alternatively, `python3 portabotty.py see serve --allow-remote-cameras` enables it for that camera-process run; use this instead of starting a second camera process.
+2. On the computer with the camera, open the existing authenticated console over **HTTPS** or through an authenticated **SSH tunnel**. For a server you already trust and can SSH into, a tunnel example is:
+
+   ```sh
+   ssh -N -o ExitOnForwardFailure=yes -L 127.0.0.1:18800:127.0.0.1:8800 USER@SERVER
+   ```
+
+   Then open `http://localhost:18800/?t=YOUR_EXISTING_WEB_TOKEN` on that computer. Use the existing web token printed by your own Portabotty server. The tunnel carries camera uploads and the controller through SSH; there are no additional listening ports on the server. An ordinary `http://SERVER:8800` LAN page cannot share a browser camera.
+3. Open **Link / Camera**, give the source a name such as “Laptop camera”, and click **Share this computer’s camera**. Grant browser camera permission. Its named remote row appears under the existing **Views** heading; link/select it just like a local camera. Keep the sharing tab visible. A banner with **Stop sharing** stays visible outside the Link sheet.
+4. Click **Stop sharing** on the source, or expand its Views row and click **Stop remote camera** from another authenticated controller. Hiding/closing the source page, losing permission or a failed upload stops capture. A disconnected publisher expires within 15 seconds and its cached frame is erased. Sharing never restarts automatically; click Share again on the source. Reuse the same name to retain device links and saved view options.
+
+HTTPS may use your existing TLS proxy on the same machine (preserve the browser's `Host` header), or the existing **HTTPS PBRELAY** route. For relay use, update both `portabotty.py` and `relay.py`; the relay now forwards a camera-only session header. Remote uploads are accepted only from a local tunnel/proxy peer; forwarded-IP/TLS headers cannot enable bare public HTTP uploads. No firewall changes, new persistent credentials or automatic camera activation are needed.
+
+Each sharing session has a random camera-only publishing permission held in memory. Only camera names/view options can be saved to `pbsee.json`; tokens and footage are not saved. Up to four named remote rows are supported per camera-process run; reuse a disconnected name. The source sends at most five JPEGs per second, up to 1280×720, with one upload in flight. This prioritizes simple visual feedback over video-call frame rates. A voluntarily shared camera continues sending while its source tab is visible, including when no viewer is watching; local cameras retain their usual on-demand/idle behavior.
+
+Synthetic checks (no camera or Bluetooth device needed): install the normal Pillow/NumPy camera dependencies, then run `python3 -m unittest discover -s tests -v` and `node --test tests/remote_camera_ui.test.cjs`. The Python tests bind temporary loopback ports, mock device discovery/input, and forbid capture subprocesses.
+
+**Remaining real-device check:** use a known server/account and a browser with camera permission; confirm the named remote row and a local camera coexist, link it to your already-paired target, check the image and calibration, then deliberately test Stop, hide-tab, network loss, and manual restart with the same name. Verify the camera indicator turns off and the disconnected view clears. Existing SSH keyboard/pointer and Bluetooth behavior still need their normal target-device smoke test. These checks require your hardware and access; they are not performed by the synthetic suite.
+
 ## Web console
 Served by PBKEY on port 8800, on the local network by default. The link carries a short token (6 lowercase characters, easy to type on a phone; generated once, kept in `portabotty.json`, typing it in capitals works too). Wrong guesses are rate limited (8 per minute per address). `--web-listen 127.0.0.1` keeps it local; `--no-web` turns it off. The link is printed under the title (clickable in terminals that support links), or says why it's off. `pbk --qr` also prints a QR code to scan with a phone. Not reachable from another computer: `sudo ufw allow 8800/tcp` (Key prints this when ufw blocks it) and use the printed link including `?t=` (without the token: 401).
 

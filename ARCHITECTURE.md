@@ -181,6 +181,33 @@ via `Registry.save_opts()`), `/save/<name>` (rotate/tilt/contrast/... settings),
 `video` group, as needed. Called from Key's `start_see()` before Cam's first start each session (no
 interactive sudo prompt - Key's already root); also what `doctor --fix` does interactively.
 
+**Opt-in remote cameras** — `Registry.remote_enabled` is false unless `pbsee.json` contains
+`"remote_cameras": true` or the camera process receives `--allow-remote-cameras`. The existing console's
+Link sheet requests browser `getUserMedia` only on Share, video only. `/remote/start` creates a named
+`RemoteCam` in the same registry and returns a random 256-bit session token; `/remote/frame/<name>`
+accepts bounded, decoded/validated JPEGs with that token in `X-PB-Camera`. Gateway and Cam authentication
+still apply separately. There is no remote URL fetcher, new listener, ffmpeg input or V4L control.
+
+`RemoteCam` implements the existing frame/wait/view-options contract but `_ensure()` cannot start capture.
+Its frames flow through the existing `/cams`, `/stream`, `/snap`, device links, processing and MCP paths.
+Local discovery reserves remote names and leaves their lifecycle to the publisher. View metadata may be
+saved as `{source: "remote", name, label, opts}`; credentials and images remain in memory. A one-second
+expiry worker revokes the token and clears frames after 15 seconds without uploads; Stop and shutdown
+do the same immediately. Stream handlers exit on remote disconnect. A new source click is always needed
+to resume. Browser upload errors, hidden pages and permission ending release all media tracks.
+
+Remote publishing POSTs require a loopback peer, matching browser Origin when present, expected content
+type and bounded body size. They support SSH localhost forwarding or an existing local TLS proxy, without
+trusting forwarding headers. PBRELAY forwards only the camera session header in addition to its existing
+job fields; its remote routes require a local proxy/tunnel peer, and the home agent refuses remote-camera
+jobs over a public plaintext relay URL. Existing relay access and agent tokens remain separate. The browser
+also requires a secure context. No credentials are generated on disk by enabling this feature.
+
+`BUILD` hashes the source when the process imports it. The authenticated `/version` route identifies the
+gateway without polling a camera. `/hub` reports gateway/camera builds and whether the camera process
+understands remote publishing, separately from its enabled setting; the Link sheet displays these
+diagnostics before a sharing attempt. The visible entry point is labeled **Link / Camera**.
+
 **CLI subcommands** (`main_see()`'s argparse): `doctor [--fix]` runs the same checks as `cam_autofix()`
 plus a real per-camera capture test, printed verbosely; `list`/`probe` for discovery; `serve`/`run`/
 `screen` are the HTTP server with no/line/full-screen status output; `snap`/`install`/`install-service`.

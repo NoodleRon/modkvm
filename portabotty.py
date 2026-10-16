@@ -30,7 +30,7 @@ Details: README.md / ARCHITECTURE.md
 """
 import os, re, sys, io, glob, json, math, time, socket, struct, select, termios, atexit, getpass
 import subprocess, threading, signal, logging, fcntl, hmac, secrets, stat, shutil, base64, argparse
-import urllib.request, urllib.parse, urllib.error
+import urllib.request, urllib.parse, urllib.error, hashlib
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import dbus, dbus.service, dbus.mainloop.glib
 from gi.repository import GLib
@@ -43,6 +43,11 @@ def _version():
     try: return open(os.path.join(HERE, "VERSION")).read().strip()
     except OSError: return "0.0.00001"
 VERSION = _version()
+def _build():
+    try:
+        with open(__file__, "rb") as f: return hashlib.sha256(f.read()).hexdigest()[:12]
+    except OSError: return "unknown"
+BUILD = _build()             # source loaded by this process, unchanged if the file is edited later
 SEE_DOT = {"live": "● live", "idle": "◐ on, idle", "stopped": "○ off"}
 HID_UUID = "00001124-0000-1000-8000-00805f9b34fb"
 PSM_CTRL, PSM_INTR = 0x11, 0x13
@@ -1834,6 +1839,9 @@ KB_PATHS = {"status", "use", "drop", "solo", "rename", "mouse", "type", "key", "
 INPUT_PATHS = {"type", "key", "goto", "click", "scroll", "drag", "move", "home"}      # blocked on the web console while view-only
 SB_GET = {"cams", "status", "stream", "snap"}
 SB_POST = {"calibrate", "save", "focus"}
+REMOTE_MAX_FRAME = 512_000
+REMOTE_TTL = 15.0             # no frames: revoke the in-memory publishing permission
+REMOTE_LIMIT = 4             # bounded remote sources, including disconnected rows
 SEE = {}          # set by main_kb: {"state": () -> bool, "set": (bool) -> bool}  (camera server on/off)
 
 
@@ -1890,23 +1898,40 @@ def http_json(url, headers=None, timeout=3):
 
 def hub_status():
     kb_up, sb_up = port_open(KB_URL), port_open(SB_URL)
-    status, cam = None, "none"
+    status, cam, remote, remote_support, camera_build = None, "none", False, False, None
     if kb_up:
         try: status = http_json(KB_URL + "/status", {"Authorization": "Bearer " + kb_token()})
         except Exception: status = None
     if sb_up:
         try:
-            cams = http_json(SB_URL + "/status", {"Authorization": "Bearer " + sb_token()}).get("cams", [])
+            report = http_json(SB_URL + "/status", {"Authorization": "Bearer " + sb_token()})
+            cams, remote = report.get("cams", []), report.get("remote_cameras", False)
+            remote_support, camera_build = "remote_cameras" in report, report.get("build")
             if any(c.get("fps", 0) > 0 and (c.get("frame_age") is None or c["frame_age"] < 3) for c in cams): cam = "live"
             elif any(c.get("present") for c in cams): cam = "idle"
         except Exception:
             pass
     return {"kb": kb_up, "sb": sb_up, "cam": cam, "status": status, "links": load_cfg().get("links", {}),
-            "see_on": SEE.get("state", lambda: None)(), "viewonly": bool(load_cfg().get("viewonly"))}
+            "see_on": SEE.get("state", lambda: None)(), "viewonly": bool(load_cfg().get("viewonly")),
+            "remote_cameras": remote, "remote_camera_support": remote_support,
+            "version": VERSION, "build": BUILD, "camera_build": camera_build}
+
+
+def remote_request_ok(handler):
+    """Only a local tunnel/TLS proxy may publish; never trust forwarded-IP/TLS headers.
+    A browser Origin must match this console, also when its loopback token is disabled.
+    """
+    if handler.client_address[0] not in ("127.0.0.1", "::1"): return False
+    origin = handler.headers.get("Origin")
+    if origin:
+        u = urllib.parse.urlparse(origin)
+        if u.scheme not in ("http", "https") or u.netloc.lower() != handler.headers.get("Host", "").lower(): return False
+    return handler.headers.get("Sec-Fetch-Site", "") != "cross-site"
 
 
 # ---------------------------------------------------------------- gateway (web console + proxies)
 CONSOLE = r"""<!doctype html><meta charset=utf-8><meta name=viewport content="width=device-width,initial-scale=1,viewport-fit=cover,user-scalable=no">
+<meta name=portabotty-build content="__PB_BUILD__">
 <title>Portabotty</title>
 <style>
 :root{--bg:#0b0c0e;--panel:#141519;--raise:#1c1e23;--line:#272a31;--fg:#eceef2;--dim:#8a8f9a;--acc:#5aa9ff;--acc2:rgba(90,169,255,.16);--ok:#3ecf74;--warn:#e6b84a;--bad:#ff6363;--r:12px}
@@ -1976,14 +2001,18 @@ input[type=range]{width:100%;max-width:130px;accent-color:var(--acc)}select{font
 #lines path{fill:none;stroke:var(--acc);stroke-width:2.2;stroke-linecap:round}#lines path.g{stroke-dasharray:5 5;opacity:.9}
 #lines g{pointer-events:all;cursor:pointer}#lines circle{fill:var(--panel);stroke:var(--acc);stroke-width:1.6}#lines text{fill:var(--acc);font:600 11px system-ui;text-anchor:middle;dominant-baseline:central}
 .empty{color:var(--dim);font-size:13px;padding:6px 2px}
+#sharing{padding:8px 14px;background:var(--acc2);display:flex;align-items:center;justify-content:space-between;gap:10px}#sharing[hidden]{display:none}
+#remote{padding-bottom:12px}#remote small{width:100%}
 </style>
 <div id=bar><span class=brand id=brand>Portabotty</span><span class=pill id=kbi><i></i>key</span><span class=pill id=sbi><i></i>see</span><div id=dev></div>
-<button id=mode aria-label=mode></button><button id=kbd aria-label=keyboard></button><button id=tr aria-label=keys></button><button id=vo aria-label=view></button><button id=lk aria-label=link></button></div>
+<button id=mode aria-label=mode></button><button id=kbd aria-label=keyboard></button><button id=tr aria-label=keys></button><button id=vo aria-label=view></button><button id=lk aria-label="Link devices and cameras" title="Link devices and share this computer's camera"></button></div>
+<div id=sharing hidden role=status><span id=sharestate>Starting camera sharing…</span><button id=stopshare>Stop sharing</button></div>
 <div id=stage><div id=none><span id=nt></span><button id=ns style=display:none>Start camera</button></div><div id=wrap><img id=cam alt=""><i id=ptr></i><div id=pad></div></div><div id=calbar><span id=ct></span><button id=cx>Cancel</button></div></div>
 <div id=dock><div id=dtabs><div class=seg><button id=tabt>Tray</button><button id=tabk>Keys</button><button id=tabp>Pad</button></div><span></span></div>
 <div id=tray></div><div id=board></div><div id=tpd style=display:none><div id=tpad><i id=tdot></i></div><div id=tbtn><button id=tl>Left</button><button id=tm>Middle</button><button id=trr>Right</button></div></div></div><input id=kb autocapitalize=off autocorrect=off autocomplete=off spellcheck=false aria-label=keyboard>
 <div id=sheet><div id=scrim></div><div id=panel><div id=ph><span>Link</span><button id=pc aria-label=close>✕</button></div><div id=pb>
 <div class=set id=srv><span>This server</span><input id=sn maxlength=60 aria-label=name><button id=sv>Save</button></div>
+<div class=set id=remote><input type=text id=remotename maxlength=60 value="Remote camera" aria-label="Remote camera name"><button id=share>Share this computer’s camera</button><small id=sharestatus role=status>Checking camera server…</small><small id=sharehint>Camera only. Start here, then link its row under Views. Requires server opt-in and HTTPS or an SSH localhost tunnel.</small><small id=buildinfo>Portabotty __PB_VERSION__ · web __PB_BUILD__</small></div>
 <div id=cols><svg id=lines></svg><div class="col d"><h4>Devices</h4><div id=ld></div></div><div class="col v"><h4><span>Views</span><label class=sw title=camera><input type=checkbox id=seesw><s></s></label></h4><div id=lv></div></div></div></div></div></div>
 <script>
 const T=new URLSearchParams(location.search).get('t')||'',$=id=>document.getElementById(id);
@@ -1994,13 +2023,74 @@ const IC={mode:'<svg class=i viewBox="0 0 24 24"><circle cx=12 cy=12 r=8 /><circ
  tr:'<svg class=i viewBox="0 0 24 24"><path d="M5 12h.01M12 12h.01M19 12h.01" stroke-width=3 /></svg>',
  lk:'<svg class=i viewBox="0 0 24 24"><path d="M10 14a4 4 0 0 0 5.7 0l3-3a4 4 0 0 0-5.7-5.7l-1 1"/><path d="M14 10a4 4 0 0 0-5.7 0l-3 3a4 4 0 0 0 5.7 5.7l1-1"/></svg>',
  chev:'<svg class=i viewBox="0 0 24 24"><path d="M6 9l6 6 6-6"/></svg>'};
-IC.eye='<svg class=i viewBox="0 0 24 24"><path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7S2 12 2 12z"/><circle cx=12 cy=12 r=3 /></svg>';$('vo').innerHTML=IC.eye;$('kbd').innerHTML=IC.kbd;$('tr').innerHTML=IC.tr;$('lk').innerHTML=IC.lk;
+IC.eye='<svg class=i viewBox="0 0 24 24"><path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7S2 12 2 12z"/><circle cx=12 cy=12 r=3 /></svg>';$('vo').innerHTML=IC.eye;$('kbd').innerHTML=IC.kbd;$('tr').innerHTML=IC.tr;$('lk').innerHTML=IC.lk+'<span>Link / Camera</span>';
 // ---- api (serialised so keys keep their order)
 let chain=Promise.resolve();
 const raw=(p,b)=>fetch(U('/kb/'+p),{method:b===undefined?'GET':'POST',body:b===undefined?undefined:JSON.stringify(b)}).then(r=>r.json()).catch(()=>({ok:false}));
 let vo=false;const INP=new Set(['type','key','goto','click','scroll','drag','move','home']);
 const send=(p,b)=>vo&&INP.has(p)?Promise.resolve({ok:false}):chain=chain.then(()=>raw(p,b));
 const post=(p,b)=>fetch(U(p),{method:'POST',body:JSON.stringify(b||{})}).then(r=>r.json()).catch(()=>({}));
+// ---- voluntary remote camera; never started by polling, viewing, or a stored preference
+let localShare=null;
+function cameraAvailability(){
+  if(!hub.sb)return 'Camera server is stopped or unreachable. Start it before sharing.';
+  if(hub.remote_camera_support===false)return 'This camera server is running older code. Update portabotty.py on the server and restart its camera process.';
+  if(!hub.remote_cameras)return 'Remote sharing is disabled on the server. Enable remote_cameras in pbsee.json and restart its camera process.';
+  if(!window.isSecureContext||!navigator.mediaDevices||!navigator.mediaDevices.getUserMedia)return 'Open this console over HTTPS or an SSH tunnel at http://localhost. Camera sharing needs a secure browser context.';
+  return '';
+}
+function cameraSetupStatus(){
+  $('sharestatus').textContent=cameraAvailability()||'Ready to share this computer’s camera. Click Share, then grant browser permission.';
+  $('buildinfo').textContent='Portabotty '+(hub.version||'unknown')+' · web '+(hub.build||'older process')+' · cam '+(hub.camera_build||'older/offline');
+}
+async function cameraRequest(path,body,session,ctype='application/json'){
+  const abort=new AbortController(),timer=setTimeout(()=>abort.abort(),8000);
+  if(session)session.abort=abort;
+  try{
+    const r=await fetch(U(path),{method:'POST',headers:{'Content-Type':ctype,...(session&&session.token?{'X-PB-Camera':session.token}:{})},body,signal:abort.signal});
+    const j=await r.json();if(!r.ok||!j.ok)throw Error(j.error||'Camera sharing failed');return j;
+  }finally{clearTimeout(timer);if(session&&session.abort===abort)session.abort=null}
+}
+function stopSharing(message='Camera sharing stopped'){
+  const s=localShare;localShare=null;
+  if(s){clearTimeout(s.timer);if(s.abort)s.abort.abort();if(s.stream)s.stream.getTracks().forEach(t=>t.stop());s.video.pause();s.video.srcObject=null;
+    if(s.name)cameraRequest('/remote/stop/'+encodeURIComponent(s.name),'{}').catch(()=>{});}
+  $('sharing').hidden=true;$('share').disabled=false;$('remotename').disabled=false;$('sharehint').textContent=message;
+}
+async function sendCameraFrame(s){
+  if(localShare!==s)return;
+  try{
+    if(!s.video.videoWidth||!s.video.videoHeight)throw Error('Camera did not supply an image');
+    const scale=Math.min(1,1280/s.video.videoWidth,720/s.video.videoHeight);
+    s.canvas.width=Math.max(1,Math.round(s.video.videoWidth*scale));s.canvas.height=Math.max(1,Math.round(s.video.videoHeight*scale));
+    s.canvas.getContext('2d').drawImage(s.video,0,0,s.canvas.width,s.canvas.height);
+    const blob=await new Promise(resolve=>s.canvas.toBlob(resolve,'image/jpeg',.8));
+    if(localShare!==s)return;if(!blob||blob.size>512000)throw Error('Camera frame is too large');
+    await cameraRequest('/remote/frame/'+encodeURIComponent(s.name),blob,s,'image/jpeg');
+    if(localShare!==s)return;$('sharestate').textContent='Sharing '+s.label+' with Portabotty viewers';
+    s.timer=setTimeout(()=>sendCameraFrame(s),200); // one upload at a time; at most 5 fps, no queued footage
+  }catch(e){if(localShare===s)stopSharing(e.message+' — start sharing again when ready')}
+}
+$('share').onclick=async()=>{
+  if(localShare)return;
+  const unavailable=cameraAvailability();if(unavailable){$('sharehint').textContent=unavailable;return}
+  const label=$('remotename').value.trim();if(!label){$('sharehint').textContent='Enter a camera name first';return}
+  const s={label,video:document.createElement('video'),canvas:document.createElement('canvas')};localShare=s;
+  $('share').disabled=true;$('remotename').disabled=true;$('sharing').hidden=false;$('sharestate').textContent='Starting '+label+' — waiting for camera permission';
+  try{
+    const stream=await navigator.mediaDevices.getUserMedia({video:{width:{ideal:1280},height:{ideal:720},frameRate:{ideal:5,max:10}},audio:false});
+    if(localShare!==s){stream.getTracks().forEach(t=>t.stop());return}s.stream=stream;
+    stream.getVideoTracks().forEach(t=>t.addEventListener('ended',()=>{if(localShare===s)stopSharing('Camera permission ended; sharing stopped')}));
+    s.video.muted=true;s.video.playsInline=true;s.video.srcObject=stream;await s.video.play();if(localShare!==s)return;
+    const j=await cameraRequest('/remote/start',JSON.stringify({label}),s);
+    if(localShare!==s){cameraRequest('/remote/stop/'+encodeURIComponent(j.name),'{}').catch(()=>{});return}
+    s.name=j.name;s.token=j.token;viewCam=j.name;ls.set('view',viewCam);tick=0;poll();sendCameraFrame(s);
+  }catch(e){if(localShare===s)stopSharing(e.message||'Camera permission declined')}
+};
+$('stopshare').onclick=()=>stopSharing();
+$('stopshare').addEventListener('keydown',e=>e.stopPropagation());
+addEventListener('pagehide',()=>stopSharing());
+document.addEventListener('visibilitychange',()=>{if(document.hidden&&localShare)stopSharing('Sharing stopped because this page was hidden; start again when ready')});
 // ---- state
 let hub={},devs=[],cams=[],links={},viewCam=ls.get('view')||'',lastActive=null,sel=null,expanded=new Set(),sig='',nonce=0,tick=0,camKey='',cal=null,autoCalDone=new Set();
 const esc=s=>String(s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
@@ -2013,12 +2103,12 @@ function chips(){
 }
 function poll(){
   fetch(U('/hub')).then(r=>r.json()).then(h=>{
-  hub=h;vo=!!h.viewonly;document.body.classList.toggle('vo',vo);$('vo').classList.toggle('on',vo);dockSize();const s=h.status||{};devs=s.devices||[];links=h.links||{};if(s.name&&s.name!==$('brand').textContent){$('brand').textContent=s.name;document.title=s.name}
+  hub=h;cameraSetupStatus();vo=!!h.viewonly;document.body.classList.toggle('vo',vo);$('vo').classList.toggle('on',vo);dockSize();const s=h.status||{};devs=s.devices||[];links=h.links||{};if(s.name&&s.name!==$('brand').textContent){$('brand').textContent=s.name;document.title=s.name}
   $('kbi').className='pill'+(h.kb?' up':'');$('sbi').className='pill'+(h.sb?(h.cam==='live'?' up':' idle'):'');
   if(s.pointer&&!cal){$('ptr').style.cssText='display:block;left:'+s.pointer[0]*100+'%;top:'+s.pointer[1]*100+'%'}else $('ptr').style.display='none';
   if(s.active!==lastActive){lastActive=s.active;if(links[s.active]){viewCam=links[s.active];ls.set('view',viewCam)}}
   const done=()=>{chips();stream();placeholder();render();maybeAutoCal()};
-  if(h.sb&&(!cams.length||tick++%4===0)){fetch(U('/cams')).then(r=>r.json()).then(c=>{cams=c;if(!camOf(viewCam)||!camOf(viewCam).present){const p=cams.find(x=>x.present)||cams[0];viewCam=p?p.name:''}done()}).catch(done)}
+  if(h.sb&&(!cams.length||tick++%4===0)){fetch(U('/cams')).then(r=>r.json()).then(c=>{cams=c;if(!camOf(viewCam)||(!camOf(viewCam).present&&camOf(viewCam).source!=='remote')){const p=cams.find(x=>x.present)||cams[0];viewCam=p?p.name:''}done()}).catch(done)}
   else{if(!h.sb)cams=[];done()}
  }).catch(()=>{$('kbi').className=$('sbi').className='pill'})}
 function stream(force){
@@ -2033,7 +2123,7 @@ function placeholder(){
   if(!hub.kb&&!hub.sb)t='offline';
   else if(!hub.sb){t=hub.see_on===false?'camera off':'starting camera…';b=hub.see_on===false}
   else if(!cams.length)t='no camera found';
-  else if(!camOf(viewCam)||!camOf(viewCam).present)t='camera not connected';
+  else if(!camOf(viewCam)||!camOf(viewCam).present)t=camOf(viewCam)&&camOf(viewCam).source==='remote'?'Remote camera disconnected — start sharing on its computer':'camera not connected';
   $('nt').textContent=t;$('ns').style.display=b?'':'none';
 }
 $('ns').onclick=()=>post('/see',{on:true}).then(()=>setTimeout(poll,800));
@@ -2185,7 +2275,7 @@ function camRow(c){
   const linked=Object.keys(links).filter(a=>links[a]===c.name);
   const r=document.createElement('div');r.className='row'+(expanded.has('v'+c.name)?' ex':'')+(sel&&sel.k==='v'&&sel.id===c.name?' sel':'');r.dataset.k='v';r.dataset.id=c.name;
   const dn=linked.map(a=>(devOf(a)||{}).name||a).join(', ');
-  r.innerHTML='<div class=main><i class="dot '+(c.present?(viewCam===c.name?'up':'idle'):'off')+'"></i><span class=nm><b>'+esc(c.label||c.name)+'</b><small>'+esc(dn||c.name)+'</small></span><button class=chev aria-label=more>'+IC.chev+'</button></div><span class="port'+(linked.length?' linked':'')+'" data-k=v data-id="'+esc(c.name)+'"></span>';
+  r.innerHTML='<div class=main><i class="dot '+(c.present?(viewCam===c.name?'up':'idle'):'off')+'"></i><span class=nm><b>'+esc(c.label||c.name)+'</b><small>'+esc((c.source==='remote'?'Remote · '+(c.sharing?'sharing':'disconnected')+' · ':'')+(dn||c.name))+'</small></span><button class=chev aria-label=more>'+IC.chev+'</button></div><span class="port'+(linked.length?' linked':'')+'" data-k=v data-id="'+esc(c.name)+'"></span>';
   const o=c.opts||{},m=document.createElement('div');m.className='more';
   const s=(patch)=>saveCam(c.name,patch);
   m.append(setRow('Rotate',seg([[0,'0'],[90,'90'],[180,'180'],[270,'270']],o.rot||0,v=>s({rot:v}))));
@@ -2197,7 +2287,9 @@ function camRow(c){
   const w=document.createElement('select');[[0,'native'],[480,'480'],[720,'720'],[960,'960'],[1280,'1280']].forEach(([v,l])=>{const op=document.createElement('option');op.value=v;op.textContent=l;if((o.w||0)==v)op.selected=true;w.append(op)});w.onchange=()=>s({w:+w.value});
   m.append(setRow('Width',w));
   const b=document.createElement('div');b.className='btns';
-  b.append(btn(c.focus_locked?'Unlock focus':'Lock focus',()=>post('/focus/'+encodeURIComponent(c.name),{lock:!c.focus_locked}).then(()=>{poll()})));
+  if(c.source==='remote'){
+    if(c.sharing)b.append(btn('Stop remote camera',()=>cameraRequest('/remote/stop/'+encodeURIComponent(c.name),'{}').then(()=>{tick=0;poll()}).catch(e=>{$('sharehint').textContent=e.message})));
+  }else b.append(btn(c.focus_locked?'Unlock focus':'Lock focus',()=>post('/focus/'+encodeURIComponent(c.name),{lock:!c.focus_locked}).then(()=>{poll()})));
   b.append(btn(o.warp?'Recalibrate':'Calibrate',()=>{viewCam=c.name;startCal()}));
   if(o.warp)b.append(btn('Clear',()=>post('/calibrate/'+encodeURIComponent(c.name),{clear:true}).then(()=>{nonce++;poll()})));
   linked.forEach(a=>b.append(btn('Unlink '+((devOf(a)||{}).name||a).slice(0,14),()=>setLink(a,null))));
@@ -2206,7 +2298,7 @@ function saveCam(name,patch){const c=camOf(name);if(c)c.opts=Object.assign({},c.
 function setLink(addr,cam){return post('/links',{addr,cam}).then(j=>{links=j.links||{};if(cam&&hub.status&&hub.status.active===addr){viewCam=cam;ls.set('view',cam)}sig='';poll()})}
 function render(){
   if(!$('sheet').classList.contains('open'))return;
-  const s=JSON.stringify([devs,cams.map(c=>[c.name,c.label,c.present,c.opts,c.focus_locked]),links,[...expanded],sel,viewCam,hub.see_on,(hub.status||{}).solo,(hub.status||{}).trackpad]);
+  const s=JSON.stringify([devs,cams.map(c=>[c.name,c.label,c.present,c.opts,c.focus_locked,c.sharing]),links,[...expanded],sel,viewCam,hub.see_on,(hub.status||{}).solo,(hub.status||{}).trackpad]);
   if(s===sig)return;
   if(document.activeElement&&document.activeElement.closest&&document.activeElement.closest('.more')&&document.activeElement.tagName==='SELECT')return;
   sig=s;
@@ -2301,15 +2393,15 @@ class WebHandler(BaseHTTPRequestHandler):
     def _body(self):
         return self.rfile.read(min(int(self.headers.get("Content-Length", 0) or 0), 100_000)) or b"{}"
 
-    def _proxy(self, method, base, path, query, token, body=None):
+    def _proxy(self, method, base, path, query, token, body=None, extra_headers=None):
         q = [(k, v) for k, v in urllib.parse.parse_qsl(query) if k != "t"]        # our token is not theirs
         url = base + path + ("?" + urllib.parse.urlencode(q) if q else "")
         req = urllib.request.Request(url, data=body, method=method,
-                                     headers={"Authorization": "Bearer " + token, "Content-Type": "application/json"})
+                                     headers={"Authorization": "Bearer " + token, "Content-Type": "application/json", **(extra_headers or {})})
         try:
             r = urllib.request.urlopen(req, timeout=30)
         except urllib.error.HTTPError as e:
-            return self._send(e.code, e.read(), e.headers.get("Content-Type", "application/json"))
+            with e: return self._send(e.code, e.read(), e.headers.get("Content-Type", "application/json"))
         except OSError:
             return self._json({"ok": False, "error": "stopped"}, 502)
         try:
@@ -2345,7 +2437,8 @@ class WebHandler(BaseHTTPRequestHandler):
         if locked_out(self.client_address[0]): return self._send(429, b"too many wrong tokens, wait a minute", "text/plain")
         if not self._auth(q): return self._send(401, b"token required (?t=...)", "text/plain")
         if method == "GET":
-            if not parts: return self._send(200, CONSOLE.encode(), "text/html; charset=utf-8")
+            if not parts: return self._send(200, CONSOLE.replace("__PB_BUILD__", BUILD).replace("__PB_VERSION__", VERSION).encode(), "text/html; charset=utf-8")
+            if parts == ["version"]: return self._json({"version": VERSION, "build": BUILD, "features": {"remote_camera_sharing": 1}})
             if parts == ["mcp"]: return self._send(405, b"POST only", "text/plain", (("Allow", "POST"),))
             if parts == ["hub"]: return self._json(hub_status())
             if parts == ["links"]: return self._json({"links": load_cfg().get("links", {})})
@@ -2354,6 +2447,7 @@ class WebHandler(BaseHTTPRequestHandler):
             if parts[0] in SB_GET and len(parts) <= 2:
                 return self._proxy("GET", SB_URL, u.path, u.query, sb_token())
         else:
+            if parts[0:1] == ["remote"]: return self._remote(u, parts)
             if parts == ["mcp"]: return self._mcp()
             if parts == ["links"]: return self._links()
             if parts == ["see"]:
@@ -2373,6 +2467,26 @@ class WebHandler(BaseHTTPRequestHandler):
             if parts[0:1] and parts[0] in SB_POST and len(parts) == 2:
                 return self._proxy("POST", SB_URL, u.path, u.query, sb_token(), self._body())
         self._send(404, b"not found", "text/plain")
+
+    def _remote(self, u, parts):
+        if not remote_request_ok(self):
+            return self._json({"ok": False, "error": "use an SSH localhost tunnel or a local HTTPS proxy"}, 403)
+        frame = len(parts) == 3 and parts[1] == "frame"
+        if parts != ["remote", "start"] and not (len(parts) == 3 and parts[1] in ("frame", "stop")):
+            return self._json({"ok": False, "error": "unknown camera action"}, 404)
+        ctype = self.headers.get("Content-Type", "").split(";")[0]
+        if ctype != ("image/jpeg" if frame else "application/json"):
+            return self._json({"ok": False, "error": "unexpected content type"}, 415)
+        try: n = int(self.headers.get("Content-Length", "0"))
+        except ValueError: n = -1
+        if not 0 < n <= (REMOTE_MAX_FRAME if frame else 1024):
+            return self._json({"ok": False, "error": "invalid body size"}, 413)
+        self.connection.settimeout(10)
+        try: body = self.rfile.read(n)
+        except OSError: return self._json({"ok": False, "error": "upload timed out"}, 408)
+        if len(body) != n: return self._json({"ok": False, "error": "incomplete upload"}, 400)
+        return self._proxy("POST", SB_URL, u.path, "", sb_token(), body,
+                           {"Content-Type": ctype, "X-PB-Camera": self.headers.get("X-PB-Camera", "")})
 
     def _links(self):
         try: b = json.loads(self._body()); addr = str(b["addr"])
@@ -2489,10 +2603,16 @@ def relay_agent(url, agent_token, port, local_token=""):
         q = job["query"]
         hdr = {"Authorization": "Bearer " + local_token} if local_token else {}
         if job["ctype"]: hdr["Content-Type"] = job["ctype"]
+        if job.get("camera_token"): hdr["X-PB-Camera"] = job["camera_token"][:128]
         try:
-            up = urllib.request.urlopen(urllib.request.Request(f"http://127.0.0.1:{port}{job['path']}" + ("?" + q if q else ""),
-                                        data=body if job["method"] == "POST" else None, method=job["method"], headers=hdr), timeout=30)
-            status, ctype = up.status, up.headers.get("Content-Type", "application/octet-stream")
+            relay_url = urllib.parse.urlparse(url)
+            if job["path"].startswith("/remote/") and not (relay_url.scheme == "https" or
+                    (relay_url.scheme == "http" and relay_url.hostname in ("127.0.0.1", "localhost", "::1"))):
+                up, status, ctype = io.BytesIO(b"remote cameras require an HTTPS relay"), 403, "text/plain"
+            else:
+                up = urllib.request.urlopen(urllib.request.Request(f"http://127.0.0.1:{port}{job['path']}" + ("?" + q if q else ""),
+                                            data=body if job["method"] == "POST" else None, method=job["method"], headers=hdr), timeout=30)
+                status, ctype = up.status, up.headers.get("Content-Type", "application/octet-stream")
         except urllib.error.HTTPError as e:
             up, status, ctype = e, e.code, e.headers.get("Content-Type", "text/plain")
         except Exception:
@@ -3005,18 +3125,115 @@ class Cam:
                 "error": self.error}
 
 
+class RemoteCam(Cam):
+    """A voluntarily published browser camera; viewing can never start capture.
+    Tokens and images live only in memory. Every new sharing session needs a click.
+    """
+    def __init__(self, name, entry):
+        super().__init__(name, "remote:", entry, {"label": entry.get("label", name)})
+        self.publisher, self.deadline, self.last_upload = "", 0.0, 0.0
+        self.present = False
+        self.error = "remote camera stopped"
+
+    def _ensure(self): pass                              # no ffmpeg, devices or automatic capture
+    def focus(self, lock): return {"ok": False, "error": "focus is managed on the sharing computer"}
+
+    def start(self):
+        with self.cond:
+            self.shutdown()
+            self.publisher = secrets.token_urlsafe(32)
+            self.deadline = time.monotonic() + REMOTE_TTL
+            self.error = "waiting for the sharing computer"
+            return self.publisher
+
+    def authorized(self, token):
+        with self.cond:
+            self.expire()
+            return bool(self.publisher and re.fullmatch(r"[A-Za-z0-9_-]{43}", token)) and hmac.compare_digest(token, self.publisher)
+
+    def expire(self):
+        with self.cond:
+            if self.publisher and time.monotonic() >= self.deadline:
+                self.shutdown()
+                self.error = "sharing computer disconnected; start sharing again there"
+
+    def publish(self, token, jpeg):
+        with self.cond:
+            if not self.authorized(token): raise ApiError("sharing session expired", 403)
+            now = time.monotonic()
+            if self.last_upload and now - self.last_upload < 0.1: raise ApiError("maximum 10 frames per second", 429)
+            self.last_upload, self.deadline = now, now + REMOTE_TTL
+            self.present, self.running, self.error = True, True, ""
+            self._publish(jpeg)
+
+    def shutdown(self):
+        with self.cond:
+            self.publisher, self.deadline, self.last_upload = "", 0.0, 0.0
+            self.present = self.running = False
+            self.latest, self.fps, self.stamps, self.prev = None, 0.0, [], None
+            self.change, self.last_change, self.last_sample, self.dht_ok = 0.0, 0.0, 0.0, None
+            self.error = "remote camera stopped"
+            self.seq += 1
+            self.cond.notify_all()
+
+    def wait_frame(self, after, timeout=5.0):
+        with self.cond:
+            self.cond.wait_for(lambda: self.seq != after or not self.publisher, timeout)
+            self.expire()
+            return self.seq, self.latest if self.seq != after and self.present else None
+
+
 class Registry:
-    def __init__(self, cfg, test_source=False):
+    def __init__(self, cfg, test_source=False, allow_remote_cameras=False):
         self.cfg, self.cams, self.lock, self.test = cfg, {}, threading.RLock(), test_source
         self.t_refresh = 0.0
+        self.remote_enabled = cfg.get("remote_cameras") is True or allow_remote_cameras
+        self.remote_stop = threading.Event()
+        self.remote_thread = None
+        # Only saved view metadata is restored, always disconnected and without a token.
+        for entry in cfg.get("cameras", []):
+            if entry.get("source") == "remote" and re.fullmatch(r"remote-[a-z0-9-]{1,48}", entry.get("name", "")):
+                self.cams[entry["name"]] = RemoteCam(entry["name"], entry)
+
+    def start_remote(self, label):
+        with self.lock:
+            if not self.remote_enabled: raise ApiError("remote cameras are disabled on this server", 403)
+            if not isinstance(label, str) or not label.strip() or len(label) > 60:
+                raise ApiError("camera name must be 1–60 characters", 400)
+            label = label.strip()
+            name = "remote-" + (slug(label)[:48] or "camera")
+            self.refresh()
+            cam = self.cams.get(name)
+            if cam and not isinstance(cam, RemoteCam): raise ApiError("name belongs to a server camera", 409)
+            if cam:
+                cam.expire()
+                if cam.publisher: raise ApiError("that camera is already sharing; choose another name", 409)
+            else:
+                if sum(isinstance(c, RemoteCam) for c in self.cams.values()) >= REMOTE_LIMIT:
+                    raise ApiError("remote camera limit reached; reuse an existing name", 409)
+                entry = {"name": name, "label": label, "source": "remote"}
+                cam = self.cams[name] = RemoteCam(name, entry)
+            token = cam.start()
+            if self.remote_thread is None:
+                self.remote_thread = threading.Thread(target=self._expire_remotes, daemon=True)
+                self.remote_thread.start()
+            return {"ok": True, "name": name, "token": token, "expires_in": REMOTE_TTL}
+
+    def _expire_remotes(self):
+        while not self.remote_stop.wait(1):
+            with self.lock:
+                for cam in self.cams.values():
+                    if isinstance(cam, RemoteCam): cam.expire()
 
     def refresh(self, force=False):
         with self.lock:
             if not force and self.cams and time.time() - self.t_refresh < 5:
                 return self.cams                           # discovery spawns v4l2-ctl: don't redo it every poll
             self.t_refresh = time.time()
-            claimed, used = set(), set()
-            for c in self.cams.values(): c.present = False
+            claimed, used = set(), {n for n, c in self.cams.items() if isinstance(c, RemoteCam)}
+            for c in self.cams.values():
+                if isinstance(c, RemoteCam): c.expire()
+                else: c.present = False
             infos = discover()
             if self.test:
                 infos.append({"dev": "test:", "label": "Synthetic test source", "product": "test", "vid": "", "pid": "",
@@ -3042,15 +3259,20 @@ class Registry:
             return self.cams.get(name)
 
     def describe(self):
-        self.refresh()
-        return [{"name": c.name, "label": c.info.get("label"), "src": c.src, "present": c.present,
-                 "usb": f"{c.info.get('vid')}:{c.info.get('pid')}" if c.info.get("vid") else "",
-                 "opts": c.defaults(), "focus_locked": "focus_absolute" in (c.entry.get("controls") or {})}
-                for c in self.cams.values()]
+        with self.lock:
+            self.refresh()
+            return [{"name": c.name, "label": c.info.get("label"), "src": c.src, "present": c.present,
+                     "usb": f"{c.info.get('vid')}:{c.info.get('pid')}" if c.info.get("vid") else "",
+                     "opts": c.defaults(), "source": "remote" if isinstance(c, RemoteCam) else "local",
+                     "sharing": bool(c.publisher) if isinstance(c, RemoteCam) else False,
+                     "focus_locked": "focus_absolute" in (c.entry.get("controls") or {})}
+                    for c in self.cams.values()]
 
     def status(self):
-        self.refresh()
-        return {"cams": [c.status() for c in self.cams.values()]}
+        with self.lock:
+            self.refresh()
+            return {"cams": [c.status() for c in self.cams.values()], "remote_cameras": self.remote_enabled,
+                    "version": VERSION, "build": BUILD}
 
     def save_controls(self, cam):
         with self.lock:
@@ -3058,6 +3280,9 @@ class Registry:
             save_config(self.cfg)
 
     def _adopt(self, cam):
+        if isinstance(cam, RemoteCam):
+            self.cfg["cameras"].append(cam.entry)
+            return
         info = cam.info
         cam.entry.update({"name": cam.name,
                           "match": f"usb:{info['vid']}:{info['pid']}" if info.get("vid") and
@@ -3072,7 +3297,10 @@ class Registry:
             save_config(self.cfg)
 
     def shutdown(self):
-        for c in self.cams.values(): c.shutdown()
+        self.remote_stop.set()
+        with self.lock:
+            self.remote_enabled = False
+            for c in self.cams.values(): c.shutdown()
 
 
 # ---------------------------------------------------------------- HTTP
@@ -3149,6 +3377,7 @@ class SeeHandler(BaseHTTPRequestHandler):
         u = urllib.parse.urlparse(self.path); q = urllib.parse.parse_qs(u.query)
         parts = [p for p in u.path.split("/") if p]
         if not self._auth(q): return self._send(401, b"token required", "text/plain")
+        if parts[0:1] == ["remote"]: return self._remote(parts)
         if len(parts) != 2 or parts[0] not in ("calibrate", "save", "focus"):
             return self._send(404, b"not found", "text/plain")
         cam = State.reg.get(parts[1])
@@ -3175,7 +3404,50 @@ class SeeHandler(BaseHTTPRequestHandler):
         State.reg.save_opts(cam, opts)
         self._json({"ok": True, "opts": cam.defaults()})
 
+    def _remote(self, parts):
+        if not remote_request_ok(self): return self._json({"ok": False, "error": "local gateway required"}, 403)
+        if not State.reg.remote_enabled: return self._json({"ok": False, "error": "remote cameras are disabled on this server"}, 403)
+        frame = len(parts) == 3 and parts[1] == "frame"
+        if parts != ["remote", "start"] and not (len(parts) == 3 and parts[1] in ("frame", "stop")):
+            return self._json({"ok": False, "error": "unknown camera action"}, 404)
+        if self.headers.get("Content-Type", "").split(";")[0] != ("image/jpeg" if frame else "application/json"):
+            return self._json({"ok": False, "error": "unexpected content type"}, 415)
+        cam = None
+        if len(parts) == 3:
+            cam = State.reg.get(parts[2])
+            if not isinstance(cam, RemoteCam): return self._json({"ok": False, "error": "no such remote camera"}, 404)
+            # Stopping from any authenticated controller is allowed. Publishing needs its session token.
+            if frame and not cam.authorized(self.headers.get("X-PB-Camera", "")):
+                return self._json({"ok": False, "error": "sharing session expired"}, 403)
+        try:
+            n = int(self.headers.get("Content-Length", "0"))
+            if not 0 < n <= (REMOTE_MAX_FRAME if frame else 1024): raise ApiError("invalid body size", 413)
+            self.connection.settimeout(10)
+            body = self.rfile.read(n)
+            if len(body) != n: raise ApiError("incomplete upload")
+            if frame:
+                from PIL import Image
+                try:
+                    with Image.open(io.BytesIO(body)) as im:
+                        if im.format != "JPEG" or max(im.size) > 1920 or im.width * im.height > 1920 * 1080:
+                            raise ValueError("expected JPEG at most 1920x1080 pixels")
+                        im.load()                       # reject malformed/truncated images before publishing
+                except Exception: raise ApiError("invalid JPEG or image too large")
+                cam.publish(self.headers.get("X-PB-Camera", ""), body)
+                return self._json({"ok": True})
+            if parts == ["remote", "start"]:
+                data = json.loads(body)
+                if not isinstance(data, dict): raise ApiError("JSON object expected")
+                return self._json(State.reg.start_remote(data.get("label")))
+            cam.shutdown()
+            return self._json({"ok": True})
+        except ApiError as e: return self._json({"ok": False, "error": str(e)}, e.code)
+        except (ValueError, OSError): return self._json({"ok": False, "error": "invalid or incomplete request"}, 400)
+
     def _snap(self, cam, o, explicit=False):
+        if isinstance(cam, RemoteCam) and not cam.present:
+            return self._send(503, cam.error.encode(), "text/plain")
+        publisher = cam.publisher if isinstance(cam, RemoteCam) else None
         cam.touch()
         seq, jpg = cam.wait_frame(cam.seq, 10)
         if jpg is None: return self._send(504, (cam.error or "no frame").encode(), "text/plain")
@@ -3186,11 +3458,18 @@ class SeeHandler(BaseHTTPRequestHandler):
                 for _ in range(n - 1):
                     seq, nxt = cam.wait_frame(seq, 2)
                     if nxt is not None: im = d.add(nxt)
+                if isinstance(cam, RemoteCam) and publisher != cam.publisher:
+                    return self._send(503, b"remote camera stopped", "text/plain")
                 return self._send(200, process(jpg, o, im), "image/jpeg")
+            if isinstance(cam, RemoteCam) and publisher != cam.publisher:
+                return self._send(503, b"remote camera stopped", "text/plain")
             self._send(200, process(jpg, o), "image/jpeg")
         except Exception as e: self._send(500, f"processing failed: {e}".encode(), "text/plain")
 
     def _stream(self, cam, o):
+        if isinstance(cam, RemoteCam) and not cam.present:
+            return self._send(503, cam.error.encode(), "text/plain")
+        publisher = cam.publisher if isinstance(cam, RemoteCam) else None
         cam.acquire()
         try:
             self.connection.settimeout(15)               # a stalled client must not keep a camera running forever
@@ -3201,6 +3480,7 @@ class SeeHandler(BaseHTTPRequestHandler):
             dn = Denoiser(o["avg"]) if int(o.get("avg") or 1) > 1 else None
             while True:
                 seq2, jpg = cam.wait_frame(seq, 5)
+                if isinstance(cam, RemoteCam) and (not cam.present or publisher != cam.publisher): break
                 if jpg is None: continue
                 seq = seq2
                 if dt and time.time() - last < dt: continue
@@ -3220,7 +3500,7 @@ def start_server(a):
     token = a.token or cfg.get("token", "")
     if listen not in ("127.0.0.1", "localhost", "::1") and not token:
         token = secrets.token_urlsafe(9); cfg["token"] = token; save_config(cfg)     # never expose a camera feed unauthenticated
-    State.reg, State.token = Registry(cfg, a.test_source), token
+    State.reg, State.token = Registry(cfg, a.test_source, getattr(a, "allow_remote_cameras", False)), token
     State.reg.refresh()
     srv = ThreadingHTTPServer((listen, port), SeeHandler); srv.daemon_threads = True
     _, gw_url, _ = ensure_gateway()      # bring up the web Gateway+MCP baseline if Key hasn't already
@@ -3485,10 +3765,13 @@ def main_see(args=None):
     sub.add_parser("probe").set_defaults(fn=cmd_probe)
     s = sub.add_parser("serve"); s.add_argument("--listen"); s.add_argument("--port", type=int); s.add_argument("--token")
     s.add_argument("--test-source", action="store_true", help="add a synthetic camera (no hardware needed)"); s.set_defaults(fn=cmd_serve)
+    s.add_argument("--allow-remote-cameras", action="store_true", help="accept voluntarily shared browser cameras through the existing gateway")
     r = sub.add_parser("run"); r.add_argument("--listen"); r.add_argument("--port", type=int); r.add_argument("--token")
     r.add_argument("--test-source", action="store_true"); r.set_defaults(fn=cmd_run)
+    r.add_argument("--allow-remote-cameras", action="store_true")
     r = sub.add_parser("screen"); r.add_argument("--listen"); r.add_argument("--port", type=int); r.add_argument("--token")
     r.add_argument("--no-pic", action="store_true"); r.add_argument("--test-source", action="store_true"); r.set_defaults(fn=cmd_screen)
+    r.add_argument("--allow-remote-cameras", action="store_true")
     n = sub.add_parser("snap"); n.add_argument("name", nargs="?"); n.add_argument("-o"); n.add_argument("--raw", action="store_true")
     n.add_argument("--test-source", action="store_true"); n.set_defaults(fn=cmd_snap)
     sub.add_parser("install").set_defaults(fn=cmd_install)
