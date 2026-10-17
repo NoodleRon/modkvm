@@ -142,6 +142,8 @@ class RemoteCameraTests(unittest.TestCase):
                 self.assertTrue(status["remote_camera_support"])
                 self.assertFalse(status["remote_cameras"])
                 self.assertEqual(status["camera_build"], "synthetic-backend")
+            with patch.object(pb, "http_json", side_effect=OSError("synthetic status failure")):
+                self.assertIsNone(pb.hub_status()["remote_camera_support"])
 
     def test_auth_origin_and_transport_required(self):
         self.assertEqual(self.request("/remote/start", {"label": "No"}, token="wrong")[0], 401)

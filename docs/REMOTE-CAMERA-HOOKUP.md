@@ -2,11 +2,13 @@
 
 A camera attached to the computer you are using can join Portabotty's **existing Link → Views list**. Portabotty's server remains the keyboard/pointer harness and sends input to its paired target over Bluetooth. The camera belongs to the sharing computer; it does not need to be plugged into the server.
 
+**Run Portabotty only on the Linux host.** The source computer uses its browser and needs no Portabotty process or sharing-app installation. Keep that browser tab open. Every Cam/gateway restart and `pbsee.json` setting in this guide belongs to the Linux host.
+
 ![Labeled browser-camera hookup and existing Link sheet](remote-camera-wireframe.svg)
 
 ## Connect
 
-1. Put the updated `portabotty.py` on the actual Linux server and restart the existing gateway and camera processes. Editing the Mac checkout alone does not update a running server or its already-loaded HTML. For PBRELAY, update `relay.py` on the relay as well. Do not start a second competing instance.
+1. On Linux, restart the existing PBKEY (`pb`), gateway and camera processes from the updated checkout. For PBRELAY, update `relay.py` on the relay as well. Do not start a second competing instance.
 2. Opt in on that server: merge `"remote_cameras": true` into its existing `pbsee.json`, preserving its other settings, and restart Cam. The one-run alternative is `see serve --allow-remote-cameras`.
 3. On the computer with the webcam, open the authenticated controller over existing HTTPS, or over your authenticated SSH localhost tunnel. For a server/account you already trust:
 
@@ -27,12 +29,13 @@ Use the persistent **Stop sharing** banner on the source, or **Stop remote camer
 | What you see | Meaning and smallest next step |
 | --- | --- |
 | No Share button inside Link | The new HTML always includes it, even when disabled. Confirm the URL and deploy/restart the actual gateway; reload the page afterward. |
-| “Camera server is stopped or unreachable” | Start/reconnect the existing camera process. This message does not request camera permission. |
-| “Camera server is running older code” | The gateway has the new UI but Cam does not support publishing. Update and restart Cam. |
-| “Remote sharing is disabled” | The updated Cam is running with opt-in off. Enable its `remote_cameras` setting and restart Cam. |
+| “Start the camera service on the Linux host” | Start/reconnect the existing Linux camera process. This message does not request camera permission. |
+| “Restart the camera service on the Linux host” | The running Linux camera process does not report browser publishing support; restart it from the updated checkout. |
+| “Check the camera service connection on the Linux host” | The camera port is reachable but its status could not be read. Check the existing Linux gateway-to-camera connection and authentication. |
+| “Enable remote_cameras on the Linux host” | Browser publishing is off. Enable the Linux camera process's `remote_cameras` setting and restart that process. |
 | HTTPS/SSH message | Open the source browser through a secure context and local proxy/tunnel. Do not bypass a certificate warning. |
 
-The Link sheet displays **web** and **cam** build IDs. An authenticated `GET /version` returns the gateway's loaded source build and `features.remote_camera_sharing: 1`; it does not contact a camera. An old gateway may return 404. The human version string alone (`0.0.00001`) cannot distinguish these source revisions.
+Optional **Connection details** in the Link sheet shows web and camera build IDs. An authenticated `GET /version` identifies the loaded gateway without contacting a camera. Normal setup shows the actions needed, without version-history explanations.
 
 The feature uses the existing controller and camera authentication, plus an in-memory publishing token scoped to the source. The endpoint accepts only a local tunnel/TLS-proxy peer and checks browser Origin when present. TLS proxies must preserve Host. PBRELAY must use HTTPS (or a local encrypted tunnel); public plaintext publishing is refused. Credentials and footage are not saved by this feature.
 

@@ -1915,7 +1915,7 @@ def http_json(url, headers=None, timeout=3):
 
 def hub_status():
     kb_up, sb_up = port_open(KB_URL), port_open(SB_URL)
-    status, cam, remote, remote_support, camera_build = None, "none", False, False, None
+    status, cam, remote, remote_support, camera_build = None, "none", False, None, None
     if kb_up:
         try: status = http_json(KB_URL + "/status", {"Authorization": "Bearer " + kb_token()})
         except Exception: status = None
@@ -2020,6 +2020,7 @@ input[type=range]{width:100%;max-width:130px;accent-color:var(--acc)}select{font
 .empty{color:var(--dim);font-size:13px;padding:6px 2px}
 #sharing{padding:8px 14px;background:var(--acc2);display:flex;align-items:center;justify-content:space-between;gap:10px}#sharing[hidden]{display:none}
 #remote{padding-bottom:12px}#remote small{width:100%}
+#connectiondetails{width:100%;font-size:12px;color:var(--dim)}#connectiondetails summary{cursor:pointer}
 </style>
 <div id=bar><span class=brand id=brand>Portabotty</span><span class=pill id=kbi><i></i>key</span><span class=pill id=sbi><i></i>see</span><div id=dev></div>
 <button id=mode aria-label=mode></button><button id=kbd aria-label=keyboard></button><button id=tr aria-label=keys></button><button id=vo aria-label=view></button><button id=lk aria-label="Link devices and cameras" title="Link devices and share this computer's camera"></button></div>
@@ -2029,7 +2030,7 @@ input[type=range]{width:100%;max-width:130px;accent-color:var(--acc)}select{font
 <div id=tray></div><div id=board></div><div id=tpd style=display:none><div id=tpad><i id=tdot></i></div><div id=tbtn><button id=tl>Left</button><button id=tm>Middle</button><button id=trr>Right</button></div></div></div><input id=kb autocapitalize=off autocorrect=off autocomplete=off spellcheck=false aria-label=keyboard>
 <div id=sheet><div id=scrim></div><div id=panel><div id=ph><span>Link</span><button id=pc aria-label=close>✕</button></div><div id=pb>
 <div class=set id=srv><span>This server</span><input id=sn maxlength=60 aria-label=name><button id=sv>Save</button></div>
-<div class=set id=remote><input type=text id=remotename maxlength=60 value="Remote camera" aria-label="Remote camera name"><button id=share>Share this computer’s camera</button><small id=sharestatus role=status>Checking camera server…</small><small id=sharehint>Camera only. Start here, then link its row under Views. Requires server opt-in and HTTPS or an SSH localhost tunnel.</small><small id=buildinfo>Portabotty __PB_VERSION__ · web __PB_BUILD__</small></div>
+<div class=set id=remote><input type=text id=remotename maxlength=60 value="Remote camera" aria-label="Remote camera name"><button id=share>Share this computer’s camera</button><small id=sharestatus role=status>Checking camera service…</small><small id=sharehint>This browser shares its camera into Views. Keep this tab open.</small><details id=connectiondetails><summary>Connection details</summary><small id=buildinfo>web __PB_BUILD__</small></details></div>
 <div id=cols><svg id=lines></svg><div class="col d"><h4>Devices</h4><div id=ld></div></div><div class="col v"><h4><span>Views</span><label class=sw title=camera><input type=checkbox id=seesw><s></s></label></h4><div id=lv></div></div></div></div></div></div>
 <script>
 const T=new URLSearchParams(location.search).get('t')||'',$=id=>document.getElementById(id);
@@ -2050,15 +2051,17 @@ const post=(p,b)=>fetch(U(p),{method:'POST',body:JSON.stringify(b||{})}).then(r=
 // ---- voluntary remote camera; never started by polling, viewing, or a stored preference
 let localShare=null;
 function cameraAvailability(){
-  if(!hub.sb)return 'Camera server is stopped or unreachable. Start it before sharing.';
-  if(hub.remote_camera_support===false)return 'This camera server is running older code. Update portabotty.py on the server and restart its camera process.';
-  if(!hub.remote_cameras)return 'Remote sharing is disabled on the server. Enable remote_cameras in pbsee.json and restart its camera process.';
-  if(!window.isSecureContext||!navigator.mediaDevices||!navigator.mediaDevices.getUserMedia)return 'Open this console over HTTPS or an SSH tunnel at http://localhost. Camera sharing needs a secure browser context.';
-  return '';
+  const steps=[];
+  if(!window.isSecureContext||!navigator.mediaDevices||!navigator.mediaDevices.getUserMedia)steps.push('Open this page through HTTPS or your SSH localhost tunnel.');
+  if(!hub.sb)steps.push('Start the camera service on the Linux host.');
+  else if(hub.remote_camera_support===null)steps.push('Check the camera service connection on the Linux host.');
+  else if(hub.remote_camera_support===false)steps.push('Restart the camera service on the Linux host.');
+  else if(!hub.remote_cameras)steps.push('Enable remote_cameras on the Linux host, then restart its camera service.');
+  return steps.join(' ');
 }
 function cameraSetupStatus(){
-  $('sharestatus').textContent=cameraAvailability()||'Ready to share this computer’s camera. Click Share, then grant browser permission.';
-  $('buildinfo').textContent='Portabotty '+(hub.version||'unknown')+' · web '+(hub.build||'older process')+' · cam '+(hub.camera_build||'older/offline');
+  $('sharestatus').textContent=cameraAvailability()||'Ready. Choose Share to allow this browser’s camera.';
+  $('buildinfo').textContent='web '+(hub.build||'unavailable')+' · camera '+(hub.camera_build||'unavailable');
 }
 async function cameraRequest(path,body,session,ctype='application/json'){
   const abort=new AbortController(),timer=setTimeout(()=>abort.abort(),8000);
@@ -2090,7 +2093,7 @@ async function sendCameraFrame(s){
 }
 $('share').onclick=async()=>{
   if(localShare)return;
-  const unavailable=cameraAvailability();if(unavailable){$('sharehint').textContent=unavailable;return}
+  const unavailable=cameraAvailability();if(unavailable){$('sharestatus').textContent=unavailable;return}
   const label=$('remotename').value.trim();if(!label){$('sharehint').textContent='Enter a camera name first';return}
   const s={label,video:document.createElement('video'),canvas:document.createElement('canvas')};localShare=s;
   $('share').disabled=true;$('remotename').disabled=true;$('sharing').hidden=false;$('sharestate').textContent='Starting '+label+' — waiting for camera permission';

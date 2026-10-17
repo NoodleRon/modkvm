@@ -86,6 +86,8 @@ Cameras are data: `pbsee.json`, one entry per camera (`match`: `usb:VID:PID` / `
 
 A computer with a browser can voluntarily share its **camera** into the existing **Link → Views** list. It uses the same live view, device links, calibration, snapshots and MCP `phone_look` as a server-local camera. Keyboard/pointer input continues through PBKEY and Bluetooth as before. The browser's normal camera chooser/site settings select the source camera; audio and screen capture are never requested.
 
+**Portabotty runs only on the Linux host.** The camera-source computer needs only its browser, kept open while sharing; no Portabotty, camera server or additional sharing app is installed there. All camera-service configuration and restarts below are on the Linux host. Use trusted HTTPS over Wi-Fi, or localhost forwarding through your existing SSH client.
+
 1. On the Portabotty server, merge `"remote_cameras": true` into the existing `pbsee.json` object (keep its camera settings), then restart the camera process. When PBKEY manages Cam, toggle its camera off/on. This option is **off by default**. Alternatively, `python3 portabotty.py see serve --allow-remote-cameras` enables it for that camera-process run; use this instead of starting a second camera process.
 2. On the computer with the camera, open the existing authenticated console over **HTTPS** or through an authenticated **SSH tunnel**. For a server you already trust and can SSH into, a tunnel example is:
 

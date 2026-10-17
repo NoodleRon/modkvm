@@ -74,12 +74,33 @@ test('server opt-in and secure context are checked before requesting media',asyn
   }
 });
 
-test('setup status distinguishes offline, old backend, disabled sharing, and insecure context',()=>{
-  for(const [options,message] of [[{serverUp:false},/stopped or unreachable/],[{supported:false},/older code/],[{enabled:false},/disabled on the server/],[{secure:false},/HTTPS or an SSH tunnel/],[{},/Ready to share/]]){
+test('setup status gives a concise Linux-host or browser action',()=>{
+  for(const [options,message] of [[{serverUp:false},/Start the camera service on the Linux host/],[{supported:false},/Restart the camera service on the Linux host/],[{enabled:false},/Enable remote_cameras on the Linux host/],[{secure:false},/HTTPS or your SSH localhost tunnel/],[{},/Ready\./]]){
     const h=harness(options);vm.runInContext('cameraSetupStatus()',h.ctx);
     assert.match(h.$('sharestatus').textContent,message);
     assert.equal(h.permissionCalls(),0);
   }
+});
+
+test('insecure browser plus incompatible camera service shows both next steps without requesting media',async()=>{
+  const h=harness({secure:false,supported:false});vm.runInContext('cameraSetupStatus()',h.ctx);
+  assert.match(h.$('sharestatus').textContent,/HTTPS or your SSH localhost tunnel/);
+  assert.match(h.$('sharestatus').textContent,/Restart the camera service on the Linux host/);
+  assert.doesNotMatch(h.$('sharestatus').textContent,/older|previous|update portabotty/i);
+  const hint=h.$('sharehint').textContent;await h.$('share').onclick();
+  assert.equal(h.$('sharehint').textContent,hint);assert.equal(h.permissionCalls(),0);assert.equal(h.requests.length,0);
+});
+
+test('missing camera status does not accuse a running service of being outdated',()=>{
+  const h=harness();h.ctx.hub.remote_camera_support=null;vm.runInContext('cameraSetupStatus()',h.ctx);
+  assert.match(h.$('sharestatus').textContent,/Check the camera service connection on the Linux host/);
+  assert.doesNotMatch(h.$('sharestatus').textContent,/older|previous|restart/i);
+});
+
+test('build details are optional and normal setup has no previous-version text',()=>{
+  assert.match(consoleHTML,/<details id=connectiondetails><summary>Connection details<\/summary>/);
+  assert.doesNotMatch(consoleHTML,/<details id=connectiondetails[^>]*\bopen\b/);
+  assert.doesNotMatch(sharing,/older code|older process|older\/offline|previous version/);
 });
 
 test('permission refusal does not register a source or retry',async()=>{
