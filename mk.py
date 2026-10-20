@@ -1860,7 +1860,40 @@ def server_name_for(saved, host=None):
 
 def reap_stale(wait=3.0):
     """Stop any other running kb-mode Key (a hung one keeps the Bluetooth HID profile registered).
-    Never touches us, our parents, or a see/mcp/web-mode process of this same file."""
+    Never touches us, our parents, or a see/mcp/web-mode process of this same file.
+
+    In headless (systemd) mode a terminal Key may already hold the Bluetooth profile:
+    instead of killing it (which would just restart the service in a loop), wait for
+    it to exit, then take over. This keeps the always-on service from fighting the
+    user's terminal sessions."""
+    if not sys.stdin.isatty():
+        mine = set()
+        pid = os.getpid()
+        while pid > 1:
+            mine.add(pid)
+            try:
+                with open(f"/proc/{pid}/stat") as f: pid = int(f.read().rsplit(")", 1)[1].split()[1])
+            except (OSError, ValueError, IndexError): break
+        while True:
+            others = []
+            try:
+                out = subprocess.run(["pgrep", "-f", r"([m]k|[p]ortabotty)\.py"], capture_output=True, text=True).stdout.split()
+                for p in out:
+                    p = int(p)
+                    if p in mine: continue
+                    try:
+                        with open(f"/proc/{p}/cmdline", "rb") as f: a = f.read().split(b"\0")
+                    except OSError: continue
+                    if len(a) > 1 and os.path.basename(a[0]).startswith(b"python") and os.path.basename(a[1]) in (b"mk.py", b"portabotty.py"):
+                        mode = a[2] if len(a) > 2 else b""
+                        if mode not in (b"see", b"cam", b"c", b"mcp", b"web", b"-h", b"--help", b"help", b"install-service"):
+                            others.append(p)
+            except (ValueError, OSError): pass
+            if not others: break
+            try: print("mk: waiting for active terminal Key to exit before taking over...", flush=True)
+            except Exception: pass
+            time.sleep(2)
+        return 0
     mine = set()
     pid = os.getpid()
     while pid > 1:                                   # us + sudo/shell parents
@@ -1924,6 +1957,8 @@ def main_kb():
         return pad_diagnose()
     if "install-service" in sys.argv:
         return cmd_key_service()
+    if ensure_key_service():
+        print("modkvm: always-on service installed and started (mkkey.service). It keeps running after you leave.", flush=True)
     dbus.mainloop.glib.DBusGMainLoop(set_as_default=True)
     dbus.mainloop.glib.threads_init()
     reap_stale()
@@ -1981,6 +2016,7 @@ def main_kb():
         else:
             global KB_URL
             KB_URL = f"http://127.0.0.1:{port}"
+            os.environ["MKKEY_TOKEN"] = tok
             os.environ["PBKEY_TOKEN"] = tok
             web_srv, app.web_url, err = ensure_gateway(app)
             if err: app.web_url = f"off ({err}: sudo pkill -f '[m]k\\.py kb')"
@@ -2018,8 +2054,8 @@ def main_kb():
 # Web gateway: console UI + MCP-over-HTTP, proxies to kb/see (Core: Gateway+MCP)
 # ======================================================================
 
-KB_URL = os.environ.get("PBKEY_URL", f"http://127.0.0.1:{KB_PORT}").rstrip("/")
-SB_URL = os.environ.get("PBSEE_URL", f"http://127.0.0.1:{SB_PORT}").rstrip("/")
+KB_URL = os.environ.get("MKKEY_URL", os.environ.get("PBKEY_URL", f"http://127.0.0.1:{KB_PORT}")).rstrip("/")
+SB_URL = os.environ.get("MKCAM_URL", os.environ.get("PBSEE_URL", f"http://127.0.0.1:{SB_PORT}")).rstrip("/")
 WEB_CONFIG = os.environ.get("PORTABOTTY_CONFIG", os.path.join(HERE, "modkvm.json"))
 WEB_CONFIG_LEGACY = os.path.join(HERE, "portabotty.json")   # read-only fallback; saves always use WEB_CONFIG
 KB_PATHS = {"status", "use", "drop", "solo", "rename", "mouse", "type", "key", "goto", "click", "scroll", "drag", "move", "home"}
@@ -2052,9 +2088,9 @@ def save_cfg(cfg):
 
 
 def kb_token():
-    t = os.environ.get("PBKEY_TOKEN")
+    t = os.environ.get("MKKEY_TOKEN", os.environ.get("PBKEY_TOKEN"))
     if t: return t.strip()
-    for p in (os.environ.get("PBKEY_TOKEN_FILE"), os.path.expanduser("~/.mkkey_token"), os.path.expanduser("~/.pbkey_token"),
+    for p in (os.environ.get("MKKEY_TOKEN_FILE", os.environ.get("PBKEY_TOKEN_FILE")), os.path.expanduser("~/.mkkey_token"), os.path.expanduser("~/.pbkey_token"),
               os.path.join(HERE, ".mkkey_token"), os.path.join(HERE, ".pbkey_token")):
         if p:
             try: return open(p).read().strip()
@@ -2063,7 +2099,7 @@ def kb_token():
 
 
 def sb_token():
-    t = os.environ.get("PBSEE_TOKEN")
+    t = os.environ.get("MKCAM_TOKEN", os.environ.get("PBSEE_TOKEN"))
     if t: return t.strip()
     for p in (SEE_CONFIG, SEE_CONFIG_LEGACY):              # new name first, legacy fallback
         try:
@@ -2906,12 +2942,12 @@ def main_web(args=None):
 # ======================================================================
 # Camera server: ffmpeg capture + HTTP (Cam, mode 'see')
 # ======================================================================
-SYSFS = os.environ.get("PBSEE_SYSFS", "/sys")
-DEVFS = os.environ.get("PBSEE_DEVFS", "/dev")
-SEE_CONFIG = os.environ.get("PBSEE_CONFIG", os.path.join(HERE, "mkcam.json"))
+SYSFS = os.environ.get("MKCAM_SYSFS", os.environ.get("PBSEE_SYSFS", "/sys"))
+DEVFS = os.environ.get("MKCAM_DEVFS", os.environ.get("PBSEE_DEVFS", "/dev"))
+SEE_CONFIG = os.environ.get("MKCAM_CONFIG", os.environ.get("PBSEE_CONFIG", os.path.join(HERE, "mkcam.json")))
 SEE_CONFIG_LEGACY = os.path.join(HERE, "pbsee.json")      # read-only fallback; saves always use SEE_CONFIG
-IDLE_STOP = float(os.environ.get("PBSEE_IDLE", "10"))     # seconds without viewers before a camera stops
-FOCUS_WAIT = float(os.environ.get("PBSEE_FOCUS_WAIT", "1.2"))   # seconds autofocus gets to settle before it is frozen
+IDLE_STOP = float(os.environ.get("MKCAM_IDLE", os.environ.get("PBSEE_IDLE", "10")))     # seconds without viewers before a camera stops
+FOCUS_WAIT = float(os.environ.get("MKCAM_FOCUS_WAIT", os.environ.get("PBSEE_FOCUS_WAIT", "1.2")))   # seconds autofocus gets to settle before it is frozen
 CHANGE_THRESHOLD = 2.0                                        # mean abs pixel diff (0-255) that counts as "screen changed"
 OPT_KEYS = ("rot", "tilt", "crop", "warp", "contrast", "sharp", "gamma", "gray", "w", "q", "avg")
 
@@ -3945,29 +3981,51 @@ def cmd_install(a):
     install_launcher()
 
 
+def ensure_key_service(force=False):
+    """Install + start the always-on mkkey.service on first root run (no separate command needed).
+    Key runs as root and auto-starts Cam/Core, so one unit brings up the whole stack."""
+    if os.geteuid() != 0:
+        return False
+    if not shutil.which("systemctl"):
+        return False
+    me = os.path.abspath(__file__)
+    unit_path = "/etc/systemd/system/mkkey.service"
+    user = os.environ.get("SUDO_USER") or getpass.getuser()
+    unit = ("[Unit]\n"
+            "Description=modkvm Key (Bluetooth keyboard)\n"
+            "After=bluetooth.target\n\n"
+            "[Service]\n"
+            "User=root\n"
+            "Environment=SUDO_USER=" + user + "\n"
+            "WorkingDirectory=" + os.path.dirname(me) + "\n"
+            "ExecStart=" + sys.executable + " " + me + " kb\n"
+            "Restart=always\n"
+            "RestartSec=3\n\n"
+            "[Install]\n"
+            "WantedBy=multi-user.target\n")
+    try:
+        existing = ""
+        try:
+            with open(unit_path) as f: existing = f.read()
+        except OSError: pass
+        if (not force) and existing and ("ExecStart=" + sys.executable + " " + me + " kb") in existing:
+            return False
+        with open(unit_path, "w") as f: f.write(unit)
+        subprocess.run(["systemctl", "daemon-reload"], check=True)
+        subprocess.run(["systemctl", "enable", "--now", "mkkey"], check=True)
+        try: install_launcher()
+        except Exception: pass
+        return True
+    except Exception as e:
+        try: print(f"mk: always-on service not installed: {e}", flush=True)
+        except Exception: pass
+        return False
+
+
 def cmd_key_service(a=None):
     """Key as an always-on systemd unit. No TTY needed: main_kb() picks App.headless() when stdin isn't a TTY."""
-    user = os.environ.get("SUDO_USER") or getpass.getuser()
-    unit = f"""[Unit]
-Description=modkvm Key (Bluetooth keyboard)
-After=bluetooth.target
-
-[Service]
-User=root
-# start_see() drops Cam to SUDO_USER (the camera needs the video group, not root)
-Environment=SUDO_USER={user}
-WorkingDirectory={os.path.dirname(os.path.abspath(__file__))}
-ExecStart={sys.executable} {os.path.abspath(__file__)} kb
-Restart=always
-
-[Install]
-WantedBy=multi-user.target
-"""
-    sudo = [] if os.geteuid() == 0 else ["sudo"]
-    subprocess.run(sudo + ["tee", "/etc/systemd/system/mkkey.service"], input=unit, text=True, stdout=subprocess.DEVNULL, check=True)
-    subprocess.run(sudo + ["systemctl", "daemon-reload"], check=True)
-    subprocess.run(sudo + ["systemctl", "enable", "--now", "mkkey"], check=True)
-    print("modkvm Key service installed and started (mkkey.service; runs `mk kb` headless)")
+    ok = ensure_key_service(force=True)
+    print("modkvm Key service installed and started (mkkey.service; runs `mk kb` headless)" if ok else "mkkey service install failed")
 
 
 def cmd_service(a):
@@ -4042,7 +4100,7 @@ def main_see(args=None):
 # ======================================================================
 # MCP tool logic: phone_* tools over the Key/Cam HTTP APIs
 # ======================================================================
-DEFAULT_CAM = os.environ.get("PBSEE_CAM", "")
+DEFAULT_CAM = os.environ.get("MKCAM_CAM", os.environ.get("PBSEE_CAM", ""))
 
 
 def http(url, data=None, headers=None, timeout=30):
