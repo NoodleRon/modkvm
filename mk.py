@@ -2552,7 +2552,7 @@ function camRow(c){
   linked.forEach(a=>b.append(btn('Unlink '+((devOf(a)||{}).name||a).slice(0,14),()=>setLink(a,null))));
   m.append(b);r.append(m);return r}
 function saveCam(name,patch){const c=camOf(name);if(c)c.opts=Object.assign({},c.opts,patch);return post('/save/'+encodeURIComponent(name),patch).then(()=>{nonce++;poll()})}
-function setLink(addr,cam){return post('/links',{addr,cam}).then(j=>{links=j.links||{};if(cam&&hub.status&&hub.status.active===addr){viewCam=cam;ls.set('view',cam)};sig='';poll();setTimeout(()=>{sig='';render();setTimeout(draw,0);if(cam)$('sharehint').textContent='Linked '+cam+' to device (saved)'},50)})
+function setLink(addr,cam){return post('/links',{addr,cam}).then(j=>{links=j.links||{};if(cam&&hub.status&&hub.status.active===addr){viewCam=cam;ls.set('view',cam)};sig='';poll();setTimeout(()=>{sig='';render();setTimeout(draw,0);if(cam)$('sharehint').textContent='Linked '+cam+' to device (saved)'},50)})}
 function render(){
   if(!$('sheet').classList.contains('open'))return;
   setTimeout(draw,0);
