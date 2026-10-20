@@ -2542,9 +2542,10 @@ function camRow(c){
   linked.forEach(a=>b.append(btn('Unlink '+((devOf(a)||{}).name||a).slice(0,14),()=>setLink(a,null))));
   m.append(b);r.append(m);return r}
 function saveCam(name,patch){const c=camOf(name);if(c)c.opts=Object.assign({},c.opts,patch);return post('/save/'+encodeURIComponent(name),patch).then(()=>{nonce++;poll()})}
-function setLink(addr,cam){return post('/links',{addr,cam}).then(j=>{links=j.links||{};if(cam&&hub.status&&hub.status.active===addr){viewCam=cam;ls.set('view',cam)}sig='';poll()})}
+function setLink(addr,cam){return post('/links',{addr,cam}).then(j=>{links=j.links||{};if(cam&&hub.status&&hub.status.active===addr){viewCam=cam;ls.set('view',cam)};sig='';poll();setTimeout(()=>{sig='';render();setTimeout(draw,0);if(cam)$('sharehint').textContent='Linked '+cam+' to device (saved)'},50)})
 function render(){
   if(!$('sheet').classList.contains('open'))return;
+  setTimeout(draw,0);
   const s=JSON.stringify([devs,cams.map(c=>[c.name,c.label,c.present,c.opts,c.focus_locked,c.sharing]),links,[...expanded],sel,viewCam,hub.see_on,(hub.status||{}).solo,(hub.status||{}).trackpad]);
   if(s===sig)return;
   if(document.activeElement&&document.activeElement.closest&&document.activeElement.closest('.more')&&document.activeElement.tagName==='SELECT')return;
