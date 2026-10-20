@@ -1960,14 +1960,19 @@ def main_kb():
     if os.geteuid() != 0:
         print("mk: Key mode needs root for Bluetooth. Run: sudo python3 mk.py", flush=True)
         return
+    print("mk: debug: entering main_kb", flush=True)
     if ensure_key_service():
         print("modkvm: always-on service installed and started (mkkey.service).", flush=True)
         print("modkvm: it keeps running after you leave. This terminal instance exits.", flush=True)
         return
+    print("mk: debug: ensure_key_service done", flush=True)
     dbus.mainloop.glib.DBusGMainLoop(set_as_default=True)
     dbus.mainloop.glib.threads_init()
+    print("mk: debug: dbus mainloop set", flush=True)
     reap_stale()
+    print("mk: debug: reap_stale done", flush=True)
     bus = dbus.SystemBus()
+    print("mk: debug: system bus connected", flush=True)
     name = server_name_for(load_state().get("name"), socket.gethostname())
 
     r = subprocess.run(["btmgmt", "class", "5", str(DEV_SUBCLASS)], capture_output=True, text=True)
