@@ -1890,7 +1890,7 @@ def reap_stale(wait=3.0):
                             others.append(p)
             except (ValueError, OSError): pass
             if not others: break
-            try: print("mk: waiting for active terminal Key to exit before taking over...", flush=True)
+            try: print(f"mk: waiting for active terminal Key to exit (mine={sorted(mine)}, others={others})...", flush=True)
             except Exception: pass
             time.sleep(2)
         return 0
