@@ -1957,8 +1957,13 @@ def main_kb():
         return pad_diagnose()
     if "install-service" in sys.argv:
         return cmd_key_service()
+    if os.geteuid() != 0:
+        print("mk: Key mode needs root for Bluetooth. Run: sudo python3 mk.py", flush=True)
+        return
     if ensure_key_service():
-        print("modkvm: always-on service installed and started (mkkey.service). It keeps running after you leave.", flush=True)
+        print("modkvm: always-on service installed and started (mkkey.service).", flush=True)
+        print("modkvm: it keeps running after you leave. This terminal instance exits.", flush=True)
+        return
     dbus.mainloop.glib.DBusGMainLoop(set_as_default=True)
     dbus.mainloop.glib.threads_init()
     reap_stale()
