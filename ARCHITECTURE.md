@@ -1,22 +1,23 @@
-# Portabotty architecture
+# modkvm architecture
 
-Portabotty is one bundled application — a single file, `portabotty.py` — with four components, started
-as one of four modes (`portabotty.py <mode>`) and installed as five short commands by `--install`.
+modkvm is one bundled application — a single file, `mk.py` (`portabotty.py` is a symlink to it) — with four
+components, started as one of four modes (`mk.py <mode>`) and installed as `mk` plus five short legacy
+commands (`pb` `pbk` `pbkb` `pbs` `pbc`) by `--install`.
 
-> The terminal UI (the `pb` menu and keys below) is bespoke and intentionally designed, not incidental.
+> The terminal UI (the `mk` menu and keys below) is bespoke and intentionally designed, not incidental.
 > Don't change its behavior without a specific reason — ask first if a change isn't obviously required.
 
 | component | mode word(s) | commands | runs as |
 |---|---|---|---|
-| **Key** | `kb` / `key` | `pb` / `pbk` / `pbkb` — the terminal + local API, and brings up the Gateway+MCP baseline and Cam too | root |
-| **Cam** | `see` / `cam` / `c` | `pbs` / `pbc` — camera capture, and also brings up the Gateway+MCP baseline if Key isn't already running it | your user (`video` group) |
+| **Key** | `kb` / `key` | `mk` (default) · legacy `pb` / `pbk` / `pbkb` — the terminal + local API, and brings up the Gateway+MCP baseline and Cam too | root |
+| **Cam** | `see` / `cam` / `c` | `mk cam` · legacy `pbs` / `pbc` — camera capture, and also brings up the Gateway+MCP baseline if Key isn't already running it | your user (`video` group) |
 | **Gateway** | `web` | a baseline started by whichever of Key/Cam comes up first; rarely run standalone | — |
 | **MCP** | `mcp` | stdio, via `claude mcp add`; the Gateway's `/mcp` reaches the same tool logic in-process | — |
 
 ## One app. One process, except the one place that needs two.
 
 ```
-┌─ portabotty.py — one bundled app ────────────────────────────────────────┐
+┌─ mk.py — one bundled app ──────────────────────────────────────────────┐
 │                                                                          │
 │  ┌─ Key (mode kb) ────────────────────────────────────────────────────┐  │
 │  │ root, one OS process                                               │  │
@@ -52,18 +53,18 @@ The Gateway isn't owned by Key specifically: `ensure_gateway(app=None)` is the s
 the other finds it already listening (`port_open()` distinguishes "already running, fine" from a genuine
 bind failure) and skips starting a second one. Called from Key, `app` is also used to wire the camera
 on/off switch and relay hosting through the Gateway; called from Cam with no `App` instance, it just
-brings the Gateway itself up. So the web console + MCP work whether you run `pb`, or only ever run
-`pbs`/`pbc` and never `pb` at all.
+brings the Gateway itself up. So the web console + MCP work whether you run `mk`, or only ever run
+`mk cam` (legacy `pbs`/`pbc`) and never `mk` at all.
 
-## Key (default: `pb` / `pbk` / `pbkb`) — `main_kb()`
+## Key (default mode: `mk`; legacy `pb` / `pbk` / `pbkb`) — `main_kb()`
 
 The entry point that owns the process: sets up D-Bus, builds the `App`, starts the local API, the
 Gateway (via `ensure_gateway()`), and (via the terminal) Cam.
 
 **Bluetooth setup**, done once at startup:
 - `reap_stale()` — kills any other running Key instance of this file (a stale one holds the BlueZ HID
-  profile and blocks re-registering it). Checks `/proc/<pid>/cmdline` for `portabotty.py` + mode word
-  `kb`, so it never touches a running Cam/MCP/Gateway process.
+  profile and blocks re-registering it). Checks `/proc/<pid>/cmdline` for `mk.py` (or the `portabotty.py`
+  symlink) + mode word `kb`, so it never touches a running Cam/MCP/Gateway process.
 - `set_prop(bus, name, val)` — sets an adapter property (`Powered`, `Alias`, `Discoverable`, ...) via
   `org.freedesktop.DBus.Properties.Set`, passing `signature="ssv"` explicitly (the value isn't wrapped in
   a `dbus.Variant` — that class isn't present in every `python3-dbus` build; the signature kwarg gets the
@@ -83,7 +84,7 @@ Gateway (via `ensure_gateway()`), and (via the terminal) Cam.
 idea what a menu or a terminal is — it only ever sees `(addr, bytes)`.
 
 **`App`** — everything else: current active device, solo/keyboard/mouse-on-off state (persisted via
-`load_state()`/`save_state()` to `.pbkey_state.json`), owns one `HID` instance.
+`load_state()`/`save_state()` to `.mkkey_state.json`, legacy `.pbkey_state.json` still read), owns one `HID` instance.
 - `console()` — the main loop when stdin is a tty. Puts the tty in raw mode (`tty_raw()`), reads bytes
   (`read()`), and on each chunk calls `handle()`.
 - `handle(fd, data)` — splits input at the menu hotkey (`MENU_KEY`, Ctrl+]), runs the rest through
@@ -118,7 +119,7 @@ idea what a menu or a terminal is — it only ever sees `(addr, bytes)`.
 
 **Local HTTP API** — `make_api(app, token, host, port)` builds a `BaseHTTPRequestHandler` that checks a
 bearer token and calls `app.api(method, path, body)` for every request. Listens on :8809 (`KB_PORT`),
-token in `.pbkey_token` (`load_token()`).
+token in `.mkkey_token` (`load_token()`; legacy `.pbkey_token` still read).
 
 **Startup sequence**: register D-Bus agent + HID profile → build `App` → start the local API
 (`make_api`) → `ensure_gateway(app)` unless `--no-web` → run a `GLib.MainLoop()` (needed for the D-Bus
@@ -138,24 +139,25 @@ stdin is a tty.
   the MJPEG live view).
 - `/mcp` → `_mcp()`: parses the JSON-RPC body and calls `handle()` (the MCP tool logic) directly — no
   subprocess, no extra HTTP hop, just a function call in the same process.
-- `/links` → reads/writes the device↔camera links stored in `portabotty.json` (`load_cfg()`/`save_cfg()`).
+- `/links` → reads/writes the device↔camera links stored in `modkvm.json` (`load_cfg()`/`save_cfg()`;
+  legacy `portabotty.json` still read).
 - `/see`, `/viewonly` → toggle the camera (via the `SEE` dict: wired to `app.set_see` when Key started
-  the Gateway; returns 501 "managed by PBKEY" if Cam started it alone, since there's no `App` to ask) and
+  the Gateway; returns 501 "managed by Key" if Cam started it alone, since there's no `App` to ask) and
   the console's view-only flag.
 
 **`ensure_gateway(app=None)`** — the shared starter described above. **`relay_agent(url, agent_token,
 port, local_token)`** — only runs if a relay is configured (via Key's `App.start_hosting()`). A
-background thread that long-polls a PBRELAY server for queued browser/MCP requests and replays each one
+background thread that long-polls a Relay server for queued browser/MCP requests and replays each one
 against `http://127.0.0.1:{port}` (this same Gateway), streaming the response back to the relay.
 
-## Cam (mode `see` / `cam` / `c`; commands `pbs` / `pbc`) — `main_see()`
+## Cam (mode `see` / `cam` / `c`; commands `mk cam`, legacy `pbs` / `pbc`) — `main_see()`
 
 The one separate OS process in the app (why: see above). Runs as a normal user (the `video` group), not
 root. `start_server()` (shared by `serve`/`run`/`screen`) also calls `ensure_gateway()` after binding
 Cam's own HTTP server, so the Gateway comes up here too if Key hasn't already started it.
 
 **`Registry`** — `discover()` finds `/dev/video*` nodes via sysfs (no root needed), `match_entry()`
-matches each one against `pbsee.json` entries (by USB vid:pid, name, serial, or stable path), and
+matches each one against `mkcam.json` entries (by USB vid:pid, name, serial, or stable path), and
 `refresh()` keeps a `name -> Cam` dict current, creating/retiring `Cam` instances as cameras
 appear/disappear.
 
@@ -181,7 +183,7 @@ via `Registry.save_opts()`), `/save/<name>` (rotate/tilt/contrast/... settings),
 `video` group, as needed. Called from Key's `start_see()` before Cam's first start each session (no
 interactive sudo prompt - Key's already root); also what `doctor --fix` does interactively.
 
-**Opt-in remote cameras** — `Registry.remote_enabled` is false unless `pbsee.json` contains
+**Opt-in remote cameras** — `Registry.remote_enabled` is false unless `mkcam.json` contains
 `"remote_cameras": true` or the camera process receives `--allow-remote-cameras`. The existing console's
 Link sheet requests browser `getUserMedia` only on Share, video only. `/remote/start` creates a named
 `RemoteCam` in the same registry and returns a random 256-bit session token; `/remote/frame/<name>`
@@ -198,7 +200,7 @@ to resume. Browser upload errors, hidden pages and permission ending release all
 
 Remote publishing POSTs require a loopback peer, matching browser Origin when present, expected content
 type and bounded body size. They support SSH localhost forwarding or an existing local TLS proxy, without
-trusting forwarding headers. PBRELAY forwards only the camera session header in addition to its existing
+trusting forwarding headers. The Relay forwards only the camera session header in addition to its existing
 job fields; its remote routes require a local proxy/tunnel peer, and the home agent refuses remote-camera
 jobs over a public plaintext relay URL. Existing relay access and agent tokens remain separate. The browser
 also requires a secure context. No credentials are generated on disk by enabling this feature.
@@ -210,7 +212,10 @@ diagnostics before a sharing attempt. The visible entry point is labeled **Link 
 
 **CLI subcommands** (`main_see()`'s argparse): `doctor [--fix]` runs the same checks as `cam_autofix()`
 plus a real per-camera capture test, printed verbosely; `list`/`probe` for discovery; `serve`/`run`/
-`screen` are the HTTP server with no/line/full-screen status output; `snap`/`install`/`install-service`.
+`screen` are the HTTP server with no/line/full-screen status output; `snap`/`install`/`install-service`
+(the Cam unit `mkcam.service`). Key mode takes `install-service` too (the Key unit `mkkey.service`;
+kb mode runs headless when stdin isn't a TTY, so it works under systemd), and top-level
+`mk install-service` installs both units.
 
 ## MCP — `main_mcp()`, and `WebHandler._mcp()`'s in-process call
 
@@ -236,9 +241,9 @@ exposes via BlueZ. The HTTP ports are for *you* (browser, MCP agent, or the rela
 
 | File/dir | What it is |
 |---|---|
-| `relay.py` | PBRELAY: a separate, stdlib-only script run on a *different* machine (a small public VM) so the Gateway is reachable without a public IP. Queues browser/MCP requests; the Gateway's `relay_agent()` thread dials out and drains the queue. No dependency on `portabotty.py`. |
+| `relay.py` | Relay: a separate, stdlib-only script run on a *different* machine (a small public VM) so the Gateway is reachable without a public IP. Queues browser/MCP requests; the Gateway's `relay_agent()` thread dials out and drains the queue. No dependency on `mk.py`. |
 | `README.md` | User-facing docs: install, commands, web console, MCP tools |
 | `VERSION` | Plain string, read at startup to print the version |
 | `install-deps.sh` | `apt install` for the system packages (bluez, ffmpeg, etc.) |
-| `skills/portabotty/SKILL.md` | Agent-facing instructions for Claude/Hermes on *how* to use the MCP tools |
-| `.gitignore` | Local secrets/state the script writes next to itself (`.pbkey_token`, `pbsee.json`, `portabotty.json`, `.pbkey_state.json`) |
+| `skills/modkvm/SKILL.md` | Agent-facing instructions for Claude/Hermes on *how* to use the MCP tools |
+| `.gitignore` | Local secrets/state the script writes next to itself (`.mkkey_token`, `mkcam.json`, `modkvm.json`, `.mkkey_state.json`; legacy names ignored too) |

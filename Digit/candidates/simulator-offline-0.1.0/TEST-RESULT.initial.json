@@ -1,0 +1,15 @@
+{
+  "atUtc": "2026-10-20T01:25:14.766088+00:00",
+  "baselineTests": 115,
+  "newJourneyTests": 4,
+  "testsRun": 119,
+  "failures": 0,
+  "errors": 0,
+  "skipped": 0,
+  "successful": true,
+  "elapsedSeconds": 0.3742199999978766,
+  "forbiddenOperationAttempts": [],
+  "networkHardwareProviderProcessLaunchGuarded": true,
+  "observedCodeMode": "synthetic fake model/source/transport and explicit fixture operator only",
+  "hostedOrActualDeviceClaim": false
+}

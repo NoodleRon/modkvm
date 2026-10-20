@@ -1,0 +1,6 @@
+{
+  "actions": [
+    {"type": "text", "value": "Hello, Digit!"},
+    {"type": "release_all"}
+  ]
+}

@@ -1,0 +1,6 @@
+{
+  "actions": [
+    {"type": "keychord", "keys": ["CTRL", "L"], "hold_ms": 30},
+    {"type": "release_all"}
+  ]
+}

@@ -33,7 +33,7 @@ function harness(options={}){
     addEventListener(k,f){events[k]=f},
     async fetch(url,init){
       requests.push({url,init});
-      if(url==='/remote/start')return{ok:!options.startError,json:async()=>options.startError?{ok:false,error:'name already sharing'}:{ok:true,name:'remote-laptop-camera',token:'temporary-test-token'}};
+      if(url==='/remote/start'){if(options.startGate)await options.startGate;return{ok:!options.startError,json:async()=>options.startError?{ok:false,error:'name already sharing'}:{ok:true,name:'remote-laptop-camera',token:'temporary-test-token'}};}
       if(url.includes('/frame/')&&options.uploadError)throw Error('connection lost');
       return{ok:true,json:async()=>({ok:true})};
     }
@@ -140,4 +140,23 @@ test('polling preserves a selected disconnected remote view; it resumes on the s
   assert.equal(h.ctx.viewCam,'remote-laptop-camera');
   h.ctx.cams[1].present=true;h.ctx.poll();await flush();
   assert.equal(h.ctx.viewCam,'remote-laptop-camera');
+});
+
+test('source Stop carries its publishing token so delayed cleanup is session-scoped',async()=>{
+  const h=harness();await h.$('share').onclick();await flush();
+  h.$('stopshare').onclick();await flush();
+  const stop=h.requests.find(r=>r.url.includes('/stop/'));
+  assert.equal(stop.init.headers['X-PB-Camera'],'temporary-test-token');
+  assert.equal(h.stops(),1);assert.equal(h.timers.size,0);
+});
+
+test('canceling an in-flight registration scopes its late cleanup to that session',async()=>{
+  let release;const startGate=new Promise(resolve=>release=resolve),h=harness({startGate});
+  const pending=h.$('share').onclick();await flush();
+  assert.ok(h.requests.some(r=>r.url==='/remote/start'));
+  h.$('stopshare').onclick();release();await pending;await flush();
+  const stop=h.requests.find(r=>r.url.includes('/stop/'));
+  assert.equal(stop.init.headers['X-PB-Camera'],'temporary-test-token');
+  assert.equal(h.requests.filter(r=>r.url.includes('/frame/')).length,0);
+  assert.equal(h.stops(),1);assert.equal(h.timers.size,0);
 });

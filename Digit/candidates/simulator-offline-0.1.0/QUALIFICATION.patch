@@ -1,0 +1,174 @@
+--- /dev/null
++++ b/qualification/test_offline_acceptance.py
+@@ -0,0 +1,88 @@
++"""Current-source acceptance journeys; fake input/model/source, no real devices."""
++import json
++import unittest
++from digit_observation import Calibration, Point
++from digit.controller import ExecutionUncertain
++from digit.loop import LoopError
++from digit.loop_fakes import make_fake_loop
++
++
++class OfflineAcceptance(unittest.TestCase):
++    def setUp(self):
++        self.bundle = make_fake_loop()
++        self.loop = self.bundle.loop
++        self.before = self.loop.observe()
++        m = self.before.metadata
++        w, h = m.dimensions.width - 1, m.dimensions.height - 1
++        self.loop.calibrate(Calibration('portfolio-fixture', m, m.target_dimensions,
++            (Point(0, 0), Point(w, 0), Point(w, h), Point(0, h)), 0.0))
++        self.bundle.device.local_arm()
++        self.loop.arm('ARM')
++        self.addCleanup(self.loop.close)
++
++    def approve_current(self):
++        proposal = self.loop.propose('Type A')
++        return proposal, self.loop.approve(proposal, proposal.confirmation)
++
++    def first_cycle(self):
++        _, approval = self.approve_current()
++        receipt = self.loop.dispatch(approval)
++        result = self.loop.observe_after(receipt)
++        self.assertEqual(json.loads(result.frame.payload), {'screen_text': 'A'})
++        self.assertEqual(result.outcome, 'unverified')
++        return receipt, result
++
++    def test_two_cycles_have_new_receipts_observations_and_no_duplicate_text(self):
++        first, observed = self.first_cycle()
++        second_proposal, approval = self.approve_current()
++        self.assertIs(self.bundle.model.last_context.previous_receipt, first)
++        self.assertEqual(type(second_proposal.actions[0]).__name__, 'ReleaseAll')
++        self.assertEqual(second_proposal.observation.frame, observed.frame.metadata)
++        second = self.loop.dispatch(approval)
++        result = self.loop.observe_after(second)
++        self.assertIsNot(second, first)
++        self.assertGreater(second.input_sequence, first.input_sequence)
++        self.assertGreater(result.frame.metadata.frame_id.sequence,
++                           observed.frame.metadata.frame_id.sequence)
++        self.assertEqual(json.loads(result.frame.payload), {'screen_text': 'A'})
++        self.assertEqual(result.outcome, 'unverified')
++        self.assertEqual(self.bundle.device.executed_batches, 2)
++        self.assertTrue(self.loop.stop())
++        self.assertFalse(self.bundle.device.armed)
++        self.assertFalse(self.bundle.device.pressed)
++
++    def test_replacing_approved_plan_rejects_old_token_without_input(self):
++        _, old_approval = self.approve_current()
++        newer, _ = self.approve_current()
++        self.assertIs(self.bundle.model.last_context.observation, newer.observation)
++        with self.assertRaises(LoopError):
++            self.loop.dispatch(old_approval)
++        self.assertEqual(self.bundle.device.executed_batches, 0)
++        self.assertFalse(self.bundle.device.armed)
++        self.assertEqual(self.loop.state, 'fault')
++
++    def test_stop_with_pending_receipt_prevents_followup_capture(self):
++        _, approval = self.approve_current()
++        receipt = self.loop.dispatch(approval)
++        frame_sequence = self.bundle.source.sequence
++        self.assertTrue(self.loop.stop())
++        with self.assertRaises(LoopError):
++            self.loop.observe_after(receipt)
++        self.assertEqual(self.bundle.source.sequence, frame_sequence)
++        self.assertEqual(self.bundle.device.executed_batches, 1)
++        self.assertFalse(self.bundle.device.armed)
++
++    def test_second_cycle_lost_ack_does_not_replay_or_accept_old_receipt(self):
++        first, _ = self.first_cycle()
++        _, approval = self.approve_current()
++        self.bundle.transport.drop_next_ack = True
++        with self.assertRaises(ExecutionUncertain):
++            self.loop.dispatch(approval)
++        self.assertEqual(self.bundle.device.executed_batches, 2)
++        self.assertFalse(self.bundle.device.armed)
++        with self.assertRaises(LoopError):
++            self.loop.dispatch(approval)
++        with self.assertRaises(LoopError):
++            self.loop.observe_after(first)
++        self.assertEqual(self.bundle.device.executed_batches, 2)
++        self.assertEqual(self.loop.state, 'fault')
+--- /dev/null
++++ b/qualification/run_qualification.py
+@@ -0,0 +1,48 @@
++"""Finite qualification runner with explicit forbidden-I/O audit guards."""
++from pathlib import Path
++import datetime
++import json
++import os
++import sys
++import time
++import unittest
++
++ROOT = Path(__file__).resolve().parents[1]
++sys.path[:0] = [str(ROOT / 'source'), str(ROOT / 'qualification')]
++os.environ['TMPDIR'] = str(ROOT / 'tmp')
++blocked_events = []
++
++def audit(event, args):
++    device_open = event == 'open' and args and isinstance(args[0], (str, bytes)) and os.fsdecode(args[0]).startswith('/dev/')
++    if (device_open or event.startswith('socket.') or event.startswith('subprocess.') or
++            event in {'os.system', 'os.posix_spawn', 'os.exec', 'os.spawn', 'os.fork', 'ctypes.dlopen'}):
++        blocked_events.append(event)
++        raise RuntimeError('Forbidden external operation during fake qualification: ' + event)
++
++sys.addaudithook(audit)
++loader = unittest.TestLoader()
++baseline = loader.discover(str(ROOT / 'source' / 'tests'))
++baseline_count = baseline.countTestCases()
++extra = loader.loadTestsFromName('test_offline_acceptance')
++acceptance_count = extra.countTestCases()
++start = time.monotonic()
++with (ROOT / 'TEST-OUTPUT.txt').open('x') as log:
++    result = unittest.TextTestRunner(stream=log, verbosity=2).run(unittest.TestSuite([baseline, extra]))
++record = {
++    'atUtc': datetime.datetime.now(datetime.timezone.utc).isoformat(),
++    'baselineTests': baseline_count,
++    'newJourneyTests': acceptance_count,
++    'testsRun': result.testsRun,
++    'failures': len(result.failures),
++    'errors': len(result.errors),
++    'skipped': len(result.skipped),
++    'successful': result.wasSuccessful(),
++    'elapsedSeconds': time.monotonic() - start,
++    'forbiddenOperationAttempts': blocked_events,
++    'networkHardwareProviderProcessLaunchGuarded': True,
++    'observedCodeMode': 'synthetic fake model/source/transport and explicit fixture operator only',
++    'hostedOrActualDeviceClaim': False,
++}
++(ROOT / 'TEST-RESULT.json').write_text(json.dumps(record, indent=2) + '\n')
++print(json.dumps(record))
++raise SystemExit(0 if result.wasSuccessful() and not blocked_events else 1)
+--- /dev/null
++++ b/TREATMENT.md
+@@ -0,0 +1,13 @@
++# Digit synthetic qualification candidate 0.1.0
++
++Date:2026-10-20. Owner:/root/digit_owner. Runtime package remains recovered simulator0.2.0.
++
++Selected increment: qualify two complete observation/proposal/explicit fixture approval/input receipt/fresh observation cycles, then replacement approval, stop with a pending receipt and acknowledgment loss on the second cycle. No new defect was established or invented.
++
++Change: add four meaningful fake journey checks and a finite guarded qualification runner outside the unchanged source tree. The existing115source tests run alongside the four new checks. All119 pass.
++
++Why: historical test reports did not establish that these newly recovered bytes execute in the current environment. The current checks demonstrate the simulator interaction and its limits.
++
++Trade-off: no runtime changes or hardware adapter work; this preserves historical source and native candidates, and cannot qualify Bluetooth pairing, OS input, real capture or target outcomes.
++
++Primary portfolio review is required before any integration. No public release, listener, native compilation, model/provider or device operation is included.
+--- /dev/null
++++ b/README.md
+@@ -0,0 +1,13 @@
++# Digit offline simulator qualification
++
++Status: candidate; primary portfolio review pending.
++
++All119checks pass:115recovered baseline tests plus4new fake interaction journeys. Runtime source is byte-identical to the recovered0.2.0source. The new qualification runner blocks socket operations, child processes/fork, raw /dev/ opens and ctypes library loading; zero forbidden attempts occurred.
++
++The journeys cover two cycles without duplicate text, revoked replacement approvals, stopping before a follow-up capture and no replay after second-cycle acknowledgment loss. Every observed result remains explicitly unverified. The operator approval calls are test fixtures, not permission for real input.
++
++No actual Bluetooth, OS keyboard/mouse, camera, app automation, native build, service, model/provider, network or package install was used. WindowsBLE and MacNOTworking candidates remain unchanged.
++
++Files:INPUTS.json pins all42inherited simulator files; TEST-RESULT.json and TEST-OUTPUT.txt contain the final finite run; QUALIFICATION.patch contains only the four new qualification/documentation files; HANDOFF.json seals exact pins and remaining gates. Earlier run evidence is retained separately as initial.
++
++Remaining gates: primary exact-source review, source ownership/selection, native build/profile closure, reviewed real observation/input adapters and explicit physical-device acceptance before any final release approval.

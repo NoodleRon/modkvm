@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""PBRELAY: public front door for a Portabotty web console behind NAT. Stdlib only; run it on any small host (e.g. AWS).
+"""Relay: public front door for a modkvm web console behind NAT. Stdlib only; run it on any small host (e.g. AWS).
 
   python3 relay.py [--port 8080] [--token ACCESS] [--agent-token AGENT]
 
-Your server dials out to it (pbk --relay URL --relay-token AGENT); browsers and MCP clients use URL/?t=ACCESS.
+Your server dials out to it (mk --relay URL --relay-token AGENT); browsers and MCP clients use URL/?t=ACCESS.
 Put TLS in front (Caddy / ALB / nginx). Tokens are generated and printed when not given (env: PBRELAY_TOKEN, PBRELAY_AGENT_TOKEN).
 """
 import os, sys, json, time, base64, queue, hmac, secrets, argparse, threading, urllib.parse
@@ -28,7 +28,7 @@ def locked_out(ip, limit=8, window=60):
 
 
 class H(BaseHTTPRequestHandler):
-    server_version = "pbrelay"
+    server_version = "mkrelay"
     def log_message(self, *a): pass
 
     def _send(self, code, body=b"", ctype="text/plain", extra=()):

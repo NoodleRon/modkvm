@@ -1,0 +1,9 @@
+build/
+**/bin/
+**/obj/
+*.user
+.vs/
+AppPackages/
+
+__pycache__/
+*.pyc

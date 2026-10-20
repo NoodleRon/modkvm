@@ -201,6 +201,42 @@ class RemoteCameraTests(unittest.TestCase):
         self.assertNotEqual(restarted["token"], session["token"])
         self.assertEqual(self.upload(session)[0], 403)
 
+    def test_delayed_source_stop_cannot_revoke_a_replacement_session(self):
+        old = self.start("Laptop camera")
+        self.request("/remote/stop/" + old["name"], {})
+        current = self.start("Laptop camera")
+        status, _, _ = self.request("/remote/stop/" + old["name"], {},
+                                    headers={"X-PB-Camera": old["token"]})
+        self.assertEqual(status, 403)
+        self.assertTrue(self.reg.get(current["name"]).authorized(current["token"]))
+        self.assertEqual(self.upload(current)[0], 200)
+        self.assertEqual(self.request("/remote/stop/" + current["name"], {},
+                                      headers={"X-PB-Camera": current["token"]})[0], 200)
+        # An authenticated controller can still deliberately stop the current row.
+        replacement = self.start("Laptop camera")
+        self.assertEqual(self.request("/remote/stop/" + replacement["name"], {})[0], 200)
+        self.assertFalse(self.reg.get(replacement["name"]).publisher)
+
+    def test_source_stop_rechecks_session_after_reading_the_body(self):
+        session = self.start()
+        cam = self.reg.get(session["name"])
+        replacement, replies = [], []
+        class DelayedBody(io.BytesIO):
+            def read(self, n=-1):
+                cam.shutdown()
+                replacement.append(cam.start())
+                return super().read(n)
+        handler = pb.SeeHandler.__new__(pb.SeeHandler)
+        handler.client_address = ("127.0.0.1", 1)
+        handler.headers = {"Content-Type": "application/json", "Content-Length": "2",
+                           "X-PB-Camera": session["token"]}
+        handler.rfile = DelayedBody(b"{}")
+        handler.connection = types.SimpleNamespace(settimeout=lambda timeout: None)
+        handler._json = lambda body, code=200: replies.append((code, body))
+        handler._remote(["remote", "stop", session["name"]])
+        self.assertEqual(replies[0][0], 403)
+        self.assertTrue(cam.authorized(replacement[0]))
+
     def test_disconnect_expires_without_a_viewer_or_poll(self):
         session = self.start()
         self.upload(session)

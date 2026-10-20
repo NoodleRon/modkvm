@@ -1,4 +1,9 @@
 # secrets and local state (never commit)
+.mkkey_token
+.mkkey_state.json
+mkcam.json
+modkvm.json
+# legacy names (still read as fallback)
 .pbkey_token
 .pbkey_state.json
 pbsee.json

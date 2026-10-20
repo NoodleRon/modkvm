@@ -1,0 +1,85 @@
+{
+  "schema": "pontic-digit-source-recovery/0.1.0",
+  "atUtc": "2026-10-20T01:03:33.345944+00:00",
+  "recoveryOwner": "/root/digit_owner",
+  "root": "/Users/ismailgunacar/Pontic/Digit/recovery",
+  "transferReceipt": "TRANSFER-RECEIPT.json",
+  "preflight": "ARCHIVE-PREFLIGHT.json",
+  "sources": [
+    {
+      "archive": "digit-0.2.0-source.zip",
+      "sourceRoot": "/Users/ismailgunacar/Pontic/Digit/recovery/source/simulator-0.2.0/digit",
+      "files": 42,
+      "bytes": 184963,
+      "allExtractedMatchArchive": true,
+      "originalManifest": "No embedded original per-file manifest; new recovery manifest verifies archive-to-extracted equality"
+    },
+    {
+      "archive": "DigitWindowsBLE-source-v0.1.0.zip",
+      "sourceRoot": "/Users/ismailgunacar/Pontic/Digit/recovery/source/windows-ble-0.1.0/digit-windows-ble",
+      "files": 22,
+      "bytes": 61929,
+      "allExtractedMatchArchive": true,
+      "originalManifest": "PASS 21/21 embedded original file pins; exact listed closure plus manifest"
+    },
+    {
+      "archive": "Digit-Mac-Classic-capability-probe-NOT-working-Bluetooth-keyboard-source.zip",
+      "sourceRoot": "/Users/ismailgunacar/Pontic/Digit/recovery/source/mac-classic-NOT-working-probe/digit-classic-macos",
+      "files": 17,
+      "bytes": 57031,
+      "allExtractedMatchArchive": true,
+      "originalManifest": "No embedded original per-file manifest; new recovery manifest verifies archive-to-extracted equality"
+    }
+  ],
+  "originalProducer": {
+    "attribution": "Copyright(c)2026 Digit contributors; MIT",
+    "implementationOwnerThread": "Unestablished; no producer thread, Git commit or canonical owner field in recovered manifests",
+    "doNotInventOriginalOwner": true
+  },
+  "sourceClosure": {
+    "simulator": "Python3.10+, dependency-free runtime per recovered pyproject; complete2declared Python package directories, tests/examples/docs resident; no real transport or observation adapter",
+    "windows": "21/21original manifest pins match; C++queue/C#WinRTproject/buildscripts/docs resident; Windowscompile/package and HOGP/system-profile/hardware compatibility unqualified",
+    "mac": "17source/docsfiles resident; portableCcore plus uncompiled Objective-Cprobe/interface declaration; no production transport, pairingUI or working controller app"
+  },
+  "historicalEvidenceOnly": {
+    "simulator": "Docs report115project+24independent synthetic checks and wheel smoke onLinux2026-10-06; not rerun",
+    "windows": "Docs report51,877portableassertions+sanitizers,4Pythonchecks,100,000stress completions onLinux2026-10-06; nativeC#/WinRT/hardware unrun",
+    "mac": "Docs report42,736portableassertions+3Pythoncases+ASan/UBSan onLinux2026-10-06; nativeObjectiveCuncompiled; NOTworkingBluetoothkeyboard"
+  },
+  "currentVerification": {
+    "archiveHashesComputed": true,
+    "libraryIdentityAndVersionXattrsVerified": true,
+    "byteSizesMatchPreparedTransfers": true,
+    "crcAndSafePathsBeforeExtraction": true,
+    "extractedHashesMatchArchives": true,
+    "originalWindowsManifestPins": 21,
+    "recoveredCodeExecuted": false,
+    "compilationOrTestsRun": false,
+    "hardwareOrBluetoothAction": false,
+    "adopted": false,
+    "hosted": false,
+    "realUserOrDeviceAcceptance": false
+  },
+  "nextUsableAppGates": [
+    "Originalproducer/selectedsourceauthority and independent recovered-source review",
+    "Separately authorize bounded offline simulator tests; current recovery scope runs none",
+    "Implement/review a real supported observation route distinct from Bluetoothinput",
+    "WindowsSDK/.NET8nativecompile/packageidentity/capability and DIS/PnP/HOGPprofile closure onWindows",
+    "MacpublicAPI/AppleSDKcompile and separately scoped transientcapabilityprobe; fullHIDprofile/routing/security/nativeadapter remain incomplete",
+    "Explicit owned-devicepairing/select/arm and physicalreceiptrelease/stop/disconnect/uncertainretry matrix for each OSdirection",
+    "Integrate only reviewed exact transport/observation contracts; final user releaseapproval"
+  ],
+  "blockedAction": {
+    "action": "Declare/operate a usable Bluetooth controller app",
+    "reason": "Only syntheticcomposition and unqualified nativecandidates recovered; realadapters/nativebuild/deviceacceptance absent",
+    "status": "Unmet prerequisite; no denial and no uncertain action"
+  },
+  "constraints": {
+    "wholeBatchCapBytes": 8388608,
+    "noDocuments": true,
+    "noHermes": true,
+    "noRecoveredCodeExecution": true,
+    "noHardwareCompilationOrAdoption": true,
+    "noSpendingOrPublication": true
+  }
+}

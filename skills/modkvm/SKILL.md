@@ -1,6 +1,6 @@
 ---
-name: portabotty
-description: Operate a phone, tablet or computer over Bluetooth (keyboard, pointer) and look at its screen through a webcam, using the Portabotty MCP tools (phone_status, phone_use, phone_type, phone_key, phone_tap, phone_scroll, phone_drag, phone_home_pointer, phone_look).
+name: modkvm
+description: Operate a phone, tablet or computer over Bluetooth (keyboard, pointer) and look at its screen through a webcam, using the modkvm MCP tools (phone_status, phone_use, phone_type, phone_key, phone_tap, phone_scroll, phone_drag, phone_home_pointer, phone_look).
 version: 1.0.0
 metadata:
   hermes:
@@ -8,10 +8,10 @@ metadata:
     category: devices
 ---
 
-# Portabotty
+# modkvm
 
 ## When to Use
-The user wants something done on a phone, tablet or computer that Portabotty controls: open an app, type text, tap, scroll, check what is on the screen.
+The user wants something done on a phone, tablet or computer that modkvm controls: open an app, type text, tap, scroll, check what is on the screen.
 
 ## Procedure
 1. `phone_status`: see devices and which is active. `phone_use` to switch (number, name or address).

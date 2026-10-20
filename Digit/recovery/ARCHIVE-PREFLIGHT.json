@@ -1,0 +1,607 @@
+{
+  "budgetCapBytes": 8388608,
+  "projectedBatchPlusReceiptAllowanceBytes": 566446,
+  "checkedBeforeExtraction": true,
+  "archives": [
+    {
+      "archive": "digit-0.2.0-source.zip",
+      "zipSha256": "61aa55305e19adfa028f32425346c95027b03843299cef6023aee2b7d00ec045",
+      "pathAndTypeChecks": "PASS",
+      "duplicateCasefoldPaths": false,
+      "encryptedOrSymlinks": false,
+      "crcAllPass": true,
+      "members": [
+        {
+          "path": "digit/.gitignore",
+          "bytes": 65,
+          "sha256": "25dd9ed3d850e8e889c7a43c1051c47d62d41e1b8c03163cef7593bff791e800",
+          "zipCrc": 30164230,
+          "originalMode": "0o100644"
+        },
+        {
+          "path": "digit/CHANGELOG.md",
+          "bytes": 1638,
+          "sha256": "f98edf2a7a63fbbc1e002c84c286cfd07749e908c1d9fb1523e848e5a028a59c",
+          "zipCrc": 249623207,
+          "originalMode": "0o100644"
+        },
+        {
+          "path": "digit/LICENSE",
+          "bytes": 1075,
+          "sha256": "4e9b377f2e86414e33bc7e1c4fe6106fcacd721bd8644de07683fd434a4e67b0",
+          "zipCrc": 4147697452,
+          "originalMode": "0o100644"
+        },
+        {
+          "path": "digit/README.md",
+          "bytes": 6197,
+          "sha256": "7684a1b2a0c41f94c0a7bb45dd7852dcde900f57d8221646bbc2e8d5e16c51cb",
+          "zipCrc": 2844618000,
+          "originalMode": "0o100644"
+        },
+        {
+          "path": "digit/SECURITY.md",
+          "bytes": 4018,
+          "sha256": "09b30ecd21bde58f658dfb538c7c47ec5dd0599fcc36990e0a890becbee506d1",
+          "zipCrc": 97729627,
+          "originalMode": "0o100644"
+        },
+        {
+          "path": "digit/THIRD_PARTY_NOTICES.md",
+          "bytes": 1437,
+          "sha256": "446ac92e9ab0ec4432417c441ca7e60cafcdca8ce7ec48c3abfb82f805e076d9",
+          "zipCrc": 1157966995,
+          "originalMode": "0o100644"
+        },
+        {
+          "path": "digit/digit/__init__.py",
+          "bytes": 97,
+          "sha256": "0c46b46c31cbae7b3bcfc9ef596dedd521bbaf41a2d4aad9bb2dcb60a9bc6144",
+          "zipCrc": 3421350007,
+          "originalMode": "0o100644"
+        },
+        {
+          "path": "digit/digit/__main__.py",
+          "bytes": 47,
+          "sha256": "79ee6f134c5c5193377cf9b189cbdcc3e2095e49ba9cec310114441c15a917c4",
+          "zipCrc": 238569142,
+          "originalMode": "0o100644"
+        },
+        {
+          "path": "digit/digit/actions.py",
+          "bytes": 3845,
+          "sha256": "51a3d37f4e98b0725e9843a2ea9f23d2901121974a5921a88ab4ef0705cd7260",
+          "zipCrc": 333341228,
+          "originalMode": "0o100644"
+        },
+        {
+          "path": "digit/digit/cli.py",
+          "bytes": 3304,
+          "sha256": "91eae7caa934be5629a3ea9cd220f0dc4610f6ee6885e78646c8e3c921187890",
+          "zipCrc": 2231547800,
+          "originalMode": "0o100644"
+        },
+        {
+          "path": "digit/digit/controller.py",
+          "bytes": 8401,
+          "sha256": "e3adbeadc7239048c2d7169c207aa7fcc95693cdd0ab34e798e5f21a6e55a46f",
+          "zipCrc": 1872177985,
+          "originalMode": "0o100644"
+        },
+        {
+          "path": "digit/digit/loop.py",
+          "bytes": 17139,
+          "sha256": "b8605d6bca719b3dd64e32103e36b99ee4e63ec9fc8773f013fa5c49a319e873",
+          "zipCrc": 1153975026,
+          "originalMode": "0o100644"
+        },
+        {
+          "path": "digit/digit/loop_demo.py",
+          "bytes": 2022,
+          "sha256": "c4977a63a31100568b76c61c0b765b78734f8cd9d3f187f2eb5f744d3441880f",
+          "zipCrc": 2142296233,
+          "originalMode": "0o100644"
+        },
+        {
+          "path": "digit/digit/loop_fakes.py",
+          "bytes": 4093,
+          "sha256": "c40a11bc51dbc6f89a53c133ace524bf407079be7013f210ac5c74f242105f92",
+          "zipCrc": 1871505393,
+          "originalMode": "0o100644"
+        },
+        {
+          "path": "digit/digit/protocol.py",
+          "bytes": 4567,
+          "sha256": "20ad9fc9c3f1d702965f46dbdf72c938c7acbaf8e765339a602a44481743690c",
+          "zipCrc": 463687170,
+          "originalMode": "0o100644"
+        },
+        {
+          "path": "digit/digit/simulator.py",
+          "bytes": 7886,
+          "sha256": "67db08ba0619423676c7aaf78b8f12ca4ccff47f4e06db959960e646bbe603e8",
+          "zipCrc": 4249337650,
+          "originalMode": "0o100644"
+        },
+        {
+          "path": "digit/digit/transport.py",
+          "bytes": 469,
+          "sha256": "389aff45de655d3538f9d143eb5565f1626ac9f4e9b42974024f916964051c4d",
+          "zipCrc": 2191670765,
+          "originalMode": "0o100644"
+        },
+        {
+          "path": "digit/digit_observation/__init__.py",
+          "bytes": 771,
+          "sha256": "cea848f59e82f182ffd47bf78242b8b2c1f559346eac4fc5e00eae5083a63fdc",
+          "zipCrc": 54936919,
+          "originalMode": "0o100644"
+        },
+        {
+          "path": "digit/digit_observation/contract.py",
+          "bytes": 5426,
+          "sha256": "51ecfffb14b3c066e68eba99cb99f54b5612cd65325e1f44622bd14bc87ce526",
+          "zipCrc": 201495752,
+          "originalMode": "0o100644"
+        },
+        {
+          "path": "digit/digit_observation/geometry.py",
+          "bytes": 5539,
+          "sha256": "83ae3d8037eabdc58819ab7c9c60764b67abd70d801ce22503ea98514604b252",
+          "zipCrc": 624726684,
+          "originalMode": "0o100644"
+        },
+        {
+          "path": "digit/digit_observation/guard.py",
+          "bytes": 14377,
+          "sha256": "baf4c4a0d4d31c17d76902a48f7bf7c61f6d0e8ea209db6253a13a979e831a35",
+          "zipCrc": 632887261,
+          "originalMode": "0o100644"
+        },
+        {
+          "path": "digit/docs/architecture.md",
+          "bytes": 6991,
+          "sha256": "562f7b6160c6412e4a3fe6d7425d1b71ab6d739076056b4f1ac5a87e522c0e46",
+          "zipCrc": 2445898244,
+          "originalMode": "0o100644"
+        },
+        {
+          "path": "digit/docs/hardware-tests.md",
+          "bytes": 2946,
+          "sha256": "82b49b6d2a99b1e8b6d1d560de32dd363cedd67ea8d3aa3be9ae855d5abe7030",
+          "zipCrc": 3062196643,
+          "originalMode": "0o100644"
+        },
+        {
+          "path": "digit/docs/observation/LICENSE",
+          "bytes": 1075,
+          "sha256": "4e9b377f2e86414e33bc7e1c4fe6106fcacd721bd8644de07683fd434a4e67b0",
+          "zipCrc": 4147697452,
+          "originalMode": "0o100644"
+        },
+        {
+          "path": "digit/docs/observation/README.md",
+          "bytes": 5477,
+          "sha256": "7c741b24d5509f974d0d871b35f18ae737f4c7bf9ec71aed27ee263861efb882",
+          "zipCrc": 431445497,
+          "originalMode": "0o100644"
+        },
+        {
+          "path": "digit/docs/observation/docs/integration.md",
+          "bytes": 5585,
+          "sha256": "4575cf338eb1550c6dd5015c3fd59a2915513572a8c274d52aa25657a5060553",
+          "zipCrc": 3565846652,
+          "originalMode": "0o100644"
+        },
+        {
+          "path": "digit/docs/observation/docs/test-status.md",
+          "bytes": 2038,
+          "sha256": "71fb4545b3d154f1443671ecee6093e5680a1751a876620fe81833aa8fd2ba64",
+          "zipCrc": 3935170888,
+          "originalMode": "0o100644"
+        },
+        {
+          "path": "digit/docs/observed-loop.md",
+          "bytes": 7057,
+          "sha256": "64c4eb788adc572fca41ed4e27ebd6efce08924df1bf571c204ffac6ed31b091",
+          "zipCrc": 1354496932,
+          "originalMode": "0o100644"
+        },
+        {
+          "path": "digit/docs/protocol.md",
+          "bytes": 4214,
+          "sha256": "7f79f5d5e8f56119510f5363ebd6e6d6a2b648041ed4a2c620803e5d661e2c3a",
+          "zipCrc": 1940654197,
+          "originalMode": "0o100644"
+        },
+        {
+          "path": "digit/docs/test-status.md",
+          "bytes": 2547,
+          "sha256": "0833b5ee96c4819f82ffa41b62aad18e124382c2e68ecfeaa12157c0e6250317",
+          "zipCrc": 2148648552,
+          "originalMode": "0o100644"
+        },
+        {
+          "path": "digit/examples/__init__.py",
+          "bytes": 31,
+          "sha256": "8c197099ee577a9134b522496e133e072446a33b194dcc63704e4db9edbf3f2b",
+          "zipCrc": 3584651641,
+          "originalMode": "0o100644"
+        },
+        {
+          "path": "digit/examples/hello.json",
+          "bytes": 99,
+          "sha256": "8e4517b5ccba3dffb35cd409c487df8b42531dd2e00e5e15bb4588a63087f5fb",
+          "zipCrc": 2113217537,
+          "originalMode": "0o100644"
+        },
+        {
+          "path": "digit/examples/shortcut.json",
+          "bytes": 115,
+          "sha256": "7618064119c087fa197fdcf633d98ee5e85d6c9acc35e8f8814945e2fe394348",
+          "zipCrc": 545803211,
+          "originalMode": "0o100644"
+        },
+        {
+          "path": "digit/examples/synthetic_mapping.py",
+          "bytes": 1402,
+          "sha256": "a6b8bdec3e58527773309a911fbd2924e14be37a3bf404e2acaf6a79b505cd83",
+          "zipCrc": 3080582071,
+          "originalMode": "0o100644"
+        },
+        {
+          "path": "digit/pyproject.toml",
+          "bytes": 408,
+          "sha256": "2429979d7af871e2c18dc9c8c58042ba3d821247ba94c2c85febf4e04e6173b7",
+          "zipCrc": 870010077,
+          "originalMode": "0o100644"
+        },
+        {
+          "path": "digit/tests/test_actions.py",
+          "bytes": 2319,
+          "sha256": "85e7adec159d4453470c9fe57e7e592e2b4fd666b9e175f5e28943ea95d14809",
+          "zipCrc": 2868024083,
+          "originalMode": "0o100644"
+        },
+        {
+          "path": "digit/tests/test_cli.py",
+          "bytes": 2108,
+          "sha256": "efd5e3a9a0296ebdc7d038220c599784d93cd5e060e5ff2b27d95857a16c29d1",
+          "zipCrc": 1957691814,
+          "originalMode": "0o100644"
+        },
+        {
+          "path": "digit/tests/test_controller.py",
+          "bytes": 7110,
+          "sha256": "93935ee4f891f675a5af21f5b11aa8ac26218136ed7251af9edaaec5a0d46c0e",
+          "zipCrc": 2380079607,
+          "originalMode": "0o100644"
+        },
+        {
+          "path": "digit/tests/test_fail_closed.py",
+          "bytes": 5686,
+          "sha256": "79655af9fe79bef6a7be185e131a412bb30b3bbc1d3c9c31ae75fed231d893f4",
+          "zipCrc": 2287177943,
+          "originalMode": "0o100644"
+        },
+        {
+          "path": "digit/tests/test_loop.py",
+          "bytes": 13839,
+          "sha256": "0e9d4a14c754e4b9262969d1e8f93df6dbdf5800a492a56db40108079a52d5ee",
+          "zipCrc": 2826371627,
+          "originalMode": "0o100644"
+        },
+        {
+          "path": "digit/tests/test_observation.py",
+          "bytes": 19038,
+          "sha256": "06be0e59c6ae91c984a7735c5b0801c59c11c339b5e015797fb5255ef56925b4",
+          "zipCrc": 963660182,
+          "originalMode": "0o100644"
+        },
+        {
+          "path": "digit/tests/test_protocol.py",
+          "bytes": 2465,
+          "sha256": "5ff004ab1ad5257bc5964176ca950824b8267f1d01213b7a354a2c93c1f56b58",
+          "zipCrc": 1893471087,
+          "originalMode": "0o100644"
+        }
+      ],
+      "extractedBytes": 184963
+    },
+    {
+      "archive": "DigitWindowsBLE-source-v0.1.0.zip",
+      "zipSha256": "5e8999c7871e7c6c00e25c4afbcd33ca5562e93529aef8f0d388c8bb04cd282c",
+      "pathAndTypeChecks": "PASS",
+      "duplicateCasefoldPaths": false,
+      "encryptedOrSymlinks": false,
+      "crcAllPass": true,
+      "members": [
+        {
+          "path": "digit-windows-ble/.gitignore",
+          "bytes": 68,
+          "sha256": "b411eac1f819345792f36af8001d5a2e54dff51e065a00d1f95a9da6f195b1c6",
+          "zipCrc": 3313689545,
+          "originalMode": "0o100644"
+        },
+        {
+          "path": "digit-windows-ble/Core/digit_queue.cpp",
+          "bytes": 3466,
+          "sha256": "5652fd3f604a7a89d3095eb578002a3e901901f85fc07fe18930c4fd80427cd2",
+          "zipCrc": 3140467331,
+          "originalMode": "0o100644"
+        },
+        {
+          "path": "digit-windows-ble/Core/digit_queue.h",
+          "bytes": 1007,
+          "sha256": "3471b35c395f02a8963a71cf7dea81b59dffe538bf1f707bb237aae3ce0642bd",
+          "zipCrc": 2560305543,
+          "originalMode": "0o100644"
+        },
+        {
+          "path": "digit-windows-ble/LICENSE",
+          "bytes": 1075,
+          "sha256": "4e9b377f2e86414e33bc7e1c4fe6106fcacd721bd8644de07683fd434a4e67b0",
+          "zipCrc": 4147697452,
+          "originalMode": "0o100644"
+        },
+        {
+          "path": "digit-windows-ble/README.md",
+          "bytes": 4910,
+          "sha256": "c9ee1fd6938b18ede6c3bddc7a7a072665850ed3b2e1874fdf6691dd0e10012f",
+          "zipCrc": 3932319864,
+          "originalMode": "0o100644"
+        },
+        {
+          "path": "digit-windows-ble/THIRD_PARTY_NOTICES.md",
+          "bytes": 984,
+          "sha256": "7487b6f4cd506ae2d2cd3bacf0755494482bdfd8f743dd101199c7bd0206e88f",
+          "zipCrc": 2544057425,
+          "originalMode": "0o100644"
+        },
+        {
+          "path": "digit-windows-ble/Tests/test_artifact.py",
+          "bytes": 1753,
+          "sha256": "3f6c83b5c27df5ff6e0b966433b7b58df6f43a0bbb3e5eeca780fdd75b28922e",
+          "zipCrc": 3844259825,
+          "originalMode": "0o100644"
+        },
+        {
+          "path": "digit-windows-ble/Tests/test_queue.cpp",
+          "bytes": 3491,
+          "sha256": "ac7ec62c4c1c4021a110858d357e50269aeb459a6aed52ed3205ccca1107ccb2",
+          "zipCrc": 3210660262,
+          "originalMode": "0o100644"
+        },
+        {
+          "path": "digit-windows-ble/Tests/test_wrap.cpp",
+          "bytes": 1017,
+          "sha256": "38932ead2cc45306e774ec08e3a8a0d3530c7e8c8d76843acea37cb3b613875c",
+          "zipCrc": 24654165,
+          "originalMode": "0o100644"
+        },
+        {
+          "path": "digit-windows-ble/Windows/Controller.cs",
+          "bytes": 15317,
+          "sha256": "171a84fb08956d19806c91e9fe3004181261c7ebd85c12a1fa17a2233c822417",
+          "zipCrc": 2904860942,
+          "originalMode": "0o100644"
+        },
+        {
+          "path": "digit-windows-ble/Windows/DigitWindowsBLE.csproj",
+          "bytes": 907,
+          "sha256": "6ff5e6cfff8ef006993a5ad401557a18f8634175b3621c235e65cc8ef27163b8",
+          "zipCrc": 212070569,
+          "originalMode": "0o100644"
+        },
+        {
+          "path": "digit-windows-ble/Windows/HidProfile.cs",
+          "bytes": 880,
+          "sha256": "76b1fb7063a1bdb8acd7abf90f217058227e5a28ba34afff84283e8d8e26bf64",
+          "zipCrc": 2924005428,
+          "originalMode": "0o100644"
+        },
+        {
+          "path": "digit-windows-ble/Windows/NativeQueue.cs",
+          "bytes": 2620,
+          "sha256": "455bfc779487b070a4846d538a6a8d314da8858f09a5ca568a198ba907978464",
+          "zipCrc": 2913052055,
+          "originalMode": "0o100644"
+        },
+        {
+          "path": "digit-windows-ble/Windows/Program.cs",
+          "bytes": 4668,
+          "sha256": "5adbccaf9531cefb8d0ce50b20e9331b8eb3fe64b90d8b73d67a9c9b7f848348",
+          "zipCrc": 2877813983,
+          "originalMode": "0o100644"
+        },
+        {
+          "path": "digit-windows-ble/Windows/app.manifest",
+          "bytes": 554,
+          "sha256": "e9d7929579461eed0a01c9b26fd925be26bc817486160b87d08e131c3ea3e419",
+          "zipCrc": 245278753,
+          "originalMode": "0o100644"
+        },
+        {
+          "path": "digit-windows-ble/docs/HARDWARE_MATRIX.md",
+          "bytes": 4407,
+          "sha256": "0baee30ab84b832fc93cbf5c434e91724262eed32d9b91ddf57166701a115616",
+          "zipCrc": 3133563454,
+          "originalMode": "0o100644"
+        },
+        {
+          "path": "digit-windows-ble/docs/SOURCES.md",
+          "bytes": 2383,
+          "sha256": "d6804e61584bc825d91c2baa72ab367726cd412c4e8424ec88e6815d71f923f6",
+          "zipCrc": 1246092560,
+          "originalMode": "0o100644"
+        },
+        {
+          "path": "digit-windows-ble/docs/VALIDATION.md",
+          "bytes": 3833,
+          "sha256": "68599cdd3fe0f0bde8ec87717dc04167f4179507fd98949cecfba8ee8ff0d717",
+          "zipCrc": 3566730112,
+          "originalMode": "0o100644"
+        },
+        {
+          "path": "digit-windows-ble/docs/WINDOWS_BUILD.md",
+          "bytes": 3434,
+          "sha256": "3661fbf4d472c54def6df167c89fe5c66e8be5b6e4ed0ed2bc2a9bb2a12ad43e",
+          "zipCrc": 3716343366,
+          "originalMode": "0o100644"
+        },
+        {
+          "path": "digit-windows-ble/scripts/build-native.cmd",
+          "bytes": 581,
+          "sha256": "888b27310b6f98187b97220bf0b575f798f4a47de3a1b72cb2fc86640c6ad300",
+          "zipCrc": 1505122751,
+          "originalMode": "0o100644"
+        },
+        {
+          "path": "digit-windows-ble/scripts/test-portable.sh",
+          "bytes": 726,
+          "sha256": "06130c14b5e0ef9db8a9daccdacf317ee4a130d64e6974656a70f30826ac9834",
+          "zipCrc": 2114624702,
+          "originalMode": "0o100755"
+        },
+        {
+          "path": "digit-windows-ble/ARTIFACT_MANIFEST.json",
+          "bytes": 3848,
+          "sha256": "d6e603c2a059a6898418d4077bf1c1280ed703741bb38cf9f98fd24878e0f01b",
+          "zipCrc": 3761385252,
+          "originalMode": "0o100644"
+        }
+      ],
+      "extractedBytes": 61929
+    },
+    {
+      "archive": "Digit-Mac-Classic-capability-probe-NOT-working-Bluetooth-keyboard-source.zip",
+      "zipSha256": "5b1a360348d50285e77b998603f62330757961455b1dfbda456131f39b49b0f2",
+      "pathAndTypeChecks": "PASS",
+      "duplicateCasefoldPaths": false,
+      "encryptedOrSymlinks": false,
+      "crcAllPass": true,
+      "members": [
+        {
+          "path": "digit-classic-macos/.gitignore",
+          "bytes": 36,
+          "sha256": "6b8cbf2363e3526a56f11d80d567508525b85f714672aae2838496a301845d0b",
+          "zipCrc": 2018721415,
+          "originalMode": "0o100644"
+        },
+        {
+          "path": "digit-classic-macos/LICENSE",
+          "bytes": 1075,
+          "sha256": "4e9b377f2e86414e33bc7e1c4fe6106fcacd721bd8644de07683fd434a4e67b0",
+          "zipCrc": 4147697452,
+          "originalMode": "0o100644"
+        },
+        {
+          "path": "digit-classic-macos/Makefile",
+          "bytes": 1028,
+          "sha256": "48210d455c557094aa10e07a4b4ed33e52062e58eb041c62964cde48a651dee5",
+          "zipCrc": 2849472284,
+          "originalMode": "0o100644"
+        },
+        {
+          "path": "digit-classic-macos/README.md",
+          "bytes": 5227,
+          "sha256": "444a075b748893f0ec2ecdf896fe0fb3a8c6aaf64b99ad1691563219795d699d",
+          "zipCrc": 1532890529,
+          "originalMode": "0o100644"
+        },
+        {
+          "path": "digit-classic-macos/THIRD_PARTY_NOTICES.md",
+          "bytes": 641,
+          "sha256": "d1bc59447c16f6905a74a6345cea52cc4e55338900aed8d43cd120e59cf0bf6e",
+          "zipCrc": 2513886929,
+          "originalMode": "0o100644"
+        },
+        {
+          "path": "digit-classic-macos/docs/native-gates.md",
+          "bytes": 3234,
+          "sha256": "c44e08cf9832243b9bc16f28341982167b865b1c776cbd145c949faa5add07c1",
+          "zipCrc": 3828571891,
+          "originalMode": "0o100644"
+        },
+        {
+          "path": "digit-classic-macos/docs/protocol-contract.md",
+          "bytes": 4075,
+          "sha256": "45d06d46424e3432bf1b746d3c8610bff3d21b9f57bed8c1cf17a4ab95af53d0",
+          "zipCrc": 3537537027,
+          "originalMode": "0o100644"
+        },
+        {
+          "path": "digit-classic-macos/docs/source-review.md",
+          "bytes": 1360,
+          "sha256": "8001f69c60628390ef18d0af700936bab94a4fd34e2857b407abd77b62583807",
+          "zipCrc": 4101079135,
+          "originalMode": "0o100644"
+        },
+        {
+          "path": "digit-classic-macos/docs/test-status.md",
+          "bytes": 2401,
+          "sha256": "4745881218f9c1b307b5c6a5ed7ed2bf9451708df2459039d57674a328aa55d4",
+          "zipCrc": 465923969,
+          "originalMode": "0o100644"
+        },
+        {
+          "path": "digit-classic-macos/include/digit_hid.h",
+          "bytes": 2953,
+          "sha256": "aa8af4302412aa11e8790d5841e49b130a5029656cf5e444921f56f6cba0b3d1",
+          "zipCrc": 2767467329,
+          "originalMode": "0o100644"
+        },
+        {
+          "path": "digit-classic-macos/native/DigitClassicSDP.h",
+          "bytes": 577,
+          "sha256": "e94ca74b288d0ed7f98898f9b01138a9c46b77221e5c01fd53efec5b44ef96cc",
+          "zipCrc": 4283718247,
+          "originalMode": "0o100644"
+        },
+        {
+          "path": "digit-classic-macos/native/DigitClassicSDP.m",
+          "bytes": 7001,
+          "sha256": "454cc6cdf6ce79b548801deee38aa7e76532ae9a1d49b69f9009a4b40be735f9",
+          "zipCrc": 2537964668,
+          "originalMode": "0o100644"
+        },
+        {
+          "path": "digit-classic-macos/native/DigitClassicTransport.h",
+          "bytes": 2453,
+          "sha256": "7c7c1e23fbe0dcf293f8faef04e9e4c2b43f9bcb05d45ab18c08ed3decec86b8",
+          "zipCrc": 3211108125,
+          "originalMode": "0o100644"
+        },
+        {
+          "path": "digit-classic-macos/native/probe.m",
+          "bytes": 1970,
+          "sha256": "c598d7d717bde3bf87cdec444963a64b0e76c573d86e2dc93c753860f8bc47ab",
+          "zipCrc": 2760649678,
+          "originalMode": "0o100644"
+        },
+        {
+          "path": "digit-classic-macos/src/digit_hid.c",
+          "bytes": 9478,
+          "sha256": "17af2ecd6aad74995c2dd734c7a05e4e4b243e0153096bd46202e35fd0eafb49",
+          "zipCrc": 4043895017,
+          "originalMode": "0o100644"
+        },
+        {
+          "path": "digit-classic-macos/tests/test_descriptor.py",
+          "bytes": 3774,
+          "sha256": "270b3c87a0c63154d3ffe1fa4719f93f054f0142e1645e065faceebc322c547c",
+          "zipCrc": 2805595636,
+          "originalMode": "0o100644"
+        },
+        {
+          "path": "digit-classic-macos/tests/test_hid.c",
+          "bytes": 9748,
+          "sha256": "6c2d0a73b4cfe1de5abb750de86cf8f7df8e08cd8dfc64d32fef40bdf1b6b6a0",
+          "zipCrc": 4196754518,
+          "originalMode": "0o100644"
+        }
+      ],
+      "extractedBytes": 57031
+    }
+  ]
+}

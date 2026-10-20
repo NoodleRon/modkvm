@@ -1,0 +1,18 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "digit-hid"
+version = "0.2.0"
+description = "A keyboard-first, approval-gated controller core and simulator"
+readme = "README.md"
+requires-python = ">=3.10"
+license = {text = "MIT"}
+dependencies = []
+
+[project.scripts]
+digit = "digit.cli:main"
+
+[tool.setuptools]
+packages = ["digit", "digit_observation"]

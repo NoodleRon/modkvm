@@ -1,0 +1,20 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "mcp": {
+    "modkvm": {
+      "type": "remote",
+      "url": "https://modkvm.example.invalid/mcp",
+      "oauth": false,
+      "headers": {
+        "Authorization": "Bearer {env:MODKVM_WEB_TOKEN}"
+      },
+      "enabled": false
+    }
+  },
+  "permission": {
+    "*": "deny",
+    "modkvm_*": "deny",
+    "modkvm_phone_status": "ask",
+    "modkvm_phone_look": "ask"
+  }
+}

@@ -1,0 +1,128 @@
+{
+  "artifact": "DigitWindowsBLE source prototype",
+  "version": "0.1.0",
+  "date_utc": "2026-10-06",
+  "scope": "Windows BLE keyboard controller source, standalone adapter candidate",
+  "validation": {
+    "portable_cpp_assertions": 51877,
+    "sanitizers": [
+      "address",
+      "undefined"
+    ],
+    "leak_detection": false,
+    "seeded_state_transitions": 10000,
+    "independent_stress_batches": 10000,
+    "independent_stress_report_completions": 100000,
+    "python_checks": 4,
+    "windows_build": "not run",
+    "windows_packaging": "not run",
+    "bluetooth_hardware": "not run"
+  },
+  "files": [
+    {
+      "path": ".gitignore",
+      "sha256": "b411eac1f819345792f36af8001d5a2e54dff51e065a00d1f95a9da6f195b1c6",
+      "bytes": 68
+    },
+    {
+      "path": "Core/digit_queue.cpp",
+      "sha256": "5652fd3f604a7a89d3095eb578002a3e901901f85fc07fe18930c4fd80427cd2",
+      "bytes": 3466
+    },
+    {
+      "path": "Core/digit_queue.h",
+      "sha256": "3471b35c395f02a8963a71cf7dea81b59dffe538bf1f707bb237aae3ce0642bd",
+      "bytes": 1007
+    },
+    {
+      "path": "LICENSE",
+      "sha256": "4e9b377f2e86414e33bc7e1c4fe6106fcacd721bd8644de07683fd434a4e67b0",
+      "bytes": 1075
+    },
+    {
+      "path": "README.md",
+      "sha256": "c9ee1fd6938b18ede6c3bddc7a7a072665850ed3b2e1874fdf6691dd0e10012f",
+      "bytes": 4910
+    },
+    {
+      "path": "THIRD_PARTY_NOTICES.md",
+      "sha256": "7487b6f4cd506ae2d2cd3bacf0755494482bdfd8f743dd101199c7bd0206e88f",
+      "bytes": 984
+    },
+    {
+      "path": "Tests/test_artifact.py",
+      "sha256": "3f6c83b5c27df5ff6e0b966433b7b58df6f43a0bbb3e5eeca780fdd75b28922e",
+      "bytes": 1753
+    },
+    {
+      "path": "Tests/test_queue.cpp",
+      "sha256": "ac7ec62c4c1c4021a110858d357e50269aeb459a6aed52ed3205ccca1107ccb2",
+      "bytes": 3491
+    },
+    {
+      "path": "Tests/test_wrap.cpp",
+      "sha256": "38932ead2cc45306e774ec08e3a8a0d3530c7e8c8d76843acea37cb3b613875c",
+      "bytes": 1017
+    },
+    {
+      "path": "Windows/Controller.cs",
+      "sha256": "171a84fb08956d19806c91e9fe3004181261c7ebd85c12a1fa17a2233c822417",
+      "bytes": 15317
+    },
+    {
+      "path": "Windows/DigitWindowsBLE.csproj",
+      "sha256": "6ff5e6cfff8ef006993a5ad401557a18f8634175b3621c235e65cc8ef27163b8",
+      "bytes": 907
+    },
+    {
+      "path": "Windows/HidProfile.cs",
+      "sha256": "76b1fb7063a1bdb8acd7abf90f217058227e5a28ba34afff84283e8d8e26bf64",
+      "bytes": 880
+    },
+    {
+      "path": "Windows/NativeQueue.cs",
+      "sha256": "455bfc779487b070a4846d538a6a8d314da8858f09a5ca568a198ba907978464",
+      "bytes": 2620
+    },
+    {
+      "path": "Windows/Program.cs",
+      "sha256": "5adbccaf9531cefb8d0ce50b20e9331b8eb3fe64b90d8b73d67a9c9b7f848348",
+      "bytes": 4668
+    },
+    {
+      "path": "Windows/app.manifest",
+      "sha256": "e9d7929579461eed0a01c9b26fd925be26bc817486160b87d08e131c3ea3e419",
+      "bytes": 554
+    },
+    {
+      "path": "docs/HARDWARE_MATRIX.md",
+      "sha256": "0baee30ab84b832fc93cbf5c434e91724262eed32d9b91ddf57166701a115616",
+      "bytes": 4407
+    },
+    {
+      "path": "docs/SOURCES.md",
+      "sha256": "d6804e61584bc825d91c2baa72ab367726cd412c4e8424ec88e6815d71f923f6",
+      "bytes": 2383
+    },
+    {
+      "path": "docs/VALIDATION.md",
+      "sha256": "68599cdd3fe0f0bde8ec87717dc04167f4179507fd98949cecfba8ee8ff0d717",
+      "bytes": 3833
+    },
+    {
+      "path": "docs/WINDOWS_BUILD.md",
+      "sha256": "3661fbf4d472c54def6df167c89fe5c66e8be5b6e4ed0ed2bc2a9bb2a12ad43e",
+      "bytes": 3434
+    },
+    {
+      "path": "scripts/build-native.cmd",
+      "sha256": "888b27310b6f98187b97220bf0b575f798f4a47de3a1b72cb2fc86640c6ad300",
+      "bytes": 581
+    },
+    {
+      "path": "scripts/test-portable.sh",
+      "sha256": "06130c14b5e0ef9db8a9daccdacf317ee4a130d64e6974656a70f30826ac9834",
+      "bytes": 726
+    }
+  ]
+}

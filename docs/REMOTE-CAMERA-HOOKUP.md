@@ -1,15 +1,15 @@
-# Portabotty: hook up a browser camera
+# modkvm: hook up a browser camera
 
-A camera attached to the computer you are using can join Portabotty's **existing Link → Views list**. Portabotty's server remains the keyboard/pointer harness and sends input to its paired target over Bluetooth. The camera belongs to the sharing computer; it does not need to be plugged into the server.
+A camera attached to the computer you are using can join modkvm's **existing Link → Views list**. modkvm's server remains the keyboard/pointer harness and sends input to its paired target over Bluetooth. The camera belongs to the sharing computer; it does not need to be plugged into the server.
 
-**Run Portabotty only on the Linux host.** The source computer uses its browser and needs no Portabotty process or sharing-app installation. Keep that browser tab open. Every Cam/gateway restart and `pbsee.json` setting in this guide belongs to the Linux host.
+**Run modkvm only on the Linux host.** The source computer uses its browser and needs no modkvm process or sharing-app installation. Keep that browser tab open. Every Cam/gateway restart and `mkcam.json` setting in this guide belongs to the Linux host.
 
 ![Labeled browser-camera hookup and existing Link sheet](remote-camera-wireframe.svg)
 
 ## Connect
 
-1. On Linux, restart the existing PBKEY (`pb`), gateway and camera processes from the updated checkout. For PBRELAY, update `relay.py` on the relay as well. Do not start a second competing instance.
-2. Opt in on that server: merge `"remote_cameras": true` into its existing `pbsee.json`, preserving its other settings, and restart Cam. The one-run alternative is `see serve --allow-remote-cameras`.
+1. On Linux, restart the existing Key (`mk`), gateway and camera processes from the updated checkout. For the Relay, update `relay.py` on the relay as well. Do not start a second competing instance.
+2. Opt in on that server: merge `"remote_cameras": true` into its existing `mkcam.json`, preserving its other settings, and restart Cam. The one-run alternative is `see serve --allow-remote-cameras`.
 3. On the computer with the webcam, open the authenticated controller over existing HTTPS, or over your authenticated SSH localhost tunnel. For a server/account you already trust:
 
    ```sh
@@ -22,7 +22,7 @@ A camera attached to the computer you are using can join Portabotty's **existing
 
 ## Stop
 
-Use the persistent **Stop sharing** banner on the source, or **Stop remote camera** in its Views row. Hiding/closing the source tab, permission ending, or an upload failure stops capture. The server revokes a disconnected source after 15 seconds and clears its cached image. It never restarts capture by viewing a row; sharing must be started again on the source computer.
+Use the persistent **Stop sharing** banner on the source, or **Stop remote camera** in its Views row. Source cleanup carries its session token, so a delayed Stop cannot revoke a replacement using the same camera name. Hiding/closing the source tab, permission ending, or an upload failure stops capture. The server revokes a disconnected source after 15 seconds and clears its cached image. It never restarts capture by viewing a row; sharing must be started again on the source computer.
 
 ## If the control is missing or unavailable
 
@@ -37,12 +37,14 @@ Use the persistent **Stop sharing** banner on the source, or **Stop remote camer
 
 Optional **Connection details** in the Link sheet shows web and camera build IDs. An authenticated `GET /version` identifies the loaded gateway without contacting a camera. Normal setup shows the actions needed, without version-history explanations.
 
-The feature uses the existing controller and camera authentication, plus an in-memory publishing token scoped to the source. The endpoint accepts only a local tunnel/TLS-proxy peer and checks browser Origin when present. TLS proxies must preserve Host. PBRELAY must use HTTPS (or a local encrypted tunnel); public plaintext publishing is refused. Credentials and footage are not saved by this feature.
+The feature uses the existing controller and camera authentication, plus an in-memory publishing token scoped to the source. The endpoint accepts only a local tunnel/TLS-proxy peer and checks browser Origin when present. TLS proxies must preserve Host. The Relay must use HTTPS (or a local encrypted tunnel); public plaintext publishing is refused. Credentials and footage are not saved by this feature.
 
 ## Verification and remaining access
 
 Development checks use synthetic JPEGs, mocked device discovery/input and blocked capture subprocesses. Browser lifecycle checks use fake media tracks. They do **not** establish a successful physical-camera hookup.
 
-Before testing a camera, check the controller's authenticated `/version` endpoint. A source update only takes effect after the process that owns the gateway has restarted; Cam is a separate process and must also run the updated file. Then reload the browser page. A successful `git pull` cannot update Python code already loaded by a running process.
+The current Pontic candidate has been qualified with inert fixtures; see [source pins, test results and the live acceptance gate](REMOTE-CAMERA-QUALIFICATION.md). Prior terminal logs and screenshots are historical observations. They do not identify the currently running Linux process, device or authenticated route.
 
-Real-device validation requires your known Linux server/account, authenticated controller URL, browser camera permission and paired target. Confirm the image, existing Views link, Stop, disconnect and manual restart. Synthetic tests do not establish a successful physical-camera hookup.
+Release approval is still required. The Linux session owner must identify the existing checkout/process and a verified secure route without sending credentials here. After approval, update and restart those existing gateway/Cam processes, enable remote publishing there, and refresh the source browser. The source user then explicitly grants camera permission and starts sharing. Confirm the named Views row, image, Stop, disconnection and manual restart. Bluetooth/input checks require a separately authorized check on the paired target.
+
+Plan import: retain this document and the adjacent SVG together. They describe the existing project; importing them into Plan does not deploy or enable modkvm.

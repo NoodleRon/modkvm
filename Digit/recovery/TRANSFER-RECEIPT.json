@@ -1,0 +1,46 @@
+{
+  "files": [
+    {
+      "file": "/Users/ismailgunacar/Pontic/Digit/recovery/archives/digit-0.2.0-source.zip",
+      "library_file_id": "libfile_d36bb97d8d348191b4a75eb103e925f0",
+      "file_id": "file_00000000d7c482308d48e158a5fded49",
+      "version": 2,
+      "bytes": 66696,
+      "sha256": "61aa55305e19adfa028f32425346c95027b03843299cef6023aee2b7d00ec045",
+      "xattrs": {
+        "user.library-file-id": "libfile_d36bb97d8d348191b4a75eb103e925f0",
+        "user.library-file-version": "2"
+      },
+      "reusedExistingSuccessfulTransfer": true
+    },
+    {
+      "file": "/Users/ismailgunacar/Pontic/Digit/recovery/archives/DigitWindowsBLE-source-v0.1.0.zip",
+      "library_file_id": "libfile_56d33edd828c81918e2236a80a5f09de",
+      "file_id": "file_00000000a4288230865526ead3ad7ef6",
+      "version": 0,
+      "bytes": 27569,
+      "sha256": "5e8999c7871e7c6c00e25c4afbcd33ca5562e93529aef8f0d388c8bb04cd282c",
+      "xattrs": {
+        "user.library-file-id": "libfile_56d33edd828c81918e2236a80a5f09de",
+        "user.library-file-version": "0"
+      },
+      "reusedExistingSuccessfulTransfer": false
+    },
+    {
+      "file": "/Users/ismailgunacar/Pontic/Digit/recovery/archives/Digit-Mac-Classic-capability-probe-NOT-working-Bluetooth-keyboard-source.zip",
+      "library_file_id": "libfile_d46c8b1b1ee081919ec6ba9b8ff981f8",
+      "file_id": "file_0000000031348230abe8f52f9cd0aa95",
+      "version": 0,
+      "bytes": 24092,
+      "sha256": "5b1a360348d50285e77b998603f62330757961455b1dfbda456131f39b49b0f2",
+      "xattrs": {
+        "user.library-file-id": "libfile_d46c8b1b1ee081919ec6ba9b8ff981f8",
+        "user.library-file-version": "0"
+      },
+      "reusedExistingSuccessfulTransfer": false
+    }
+  ],
+  "recoveredCodeExecuted": false,
+  "helperSha256": "5e1557817be17db06e2375f8c34ed83e948d520242e5ee4cb50a30c7a4c83378",
+  "earlierScriptError": "os.getxattr unavailable after successful first transfer; existing file+metadata verified with macOS xattr; no duplicate download"
+}

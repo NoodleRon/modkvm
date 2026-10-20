@@ -1,0 +1,26 @@
+{
+  "schema": "portfolio-offline-evidence-review/0.1.0",
+  "atUtc": "2026-10-20T01:34:00.691600+00:00",
+  "reviewerThread": "01a156be-f404-76f2-b582-0959cf6c7020",
+  "result": "PASS_SYNTHETIC_QUALIFICATION_ONLY",
+  "verifiedEvidencePins": 10,
+  "handoff": {
+    "path": "/Users/ismailgunacar/Pontic/Digit/candidates/simulator-offline-0.1.0/HANDOFF.json",
+    "bytes": 4688,
+    "sha256": "092e60553a1e881449492a6349254d44277b77268d3538d4f89c5bd230bb7108"
+  },
+  "checks": [
+    "Inspected4newactualfake-loopjourneys:distinctsecondreceipt/observation,replacedapprovalrefusal,stoppreventsnextcapture,lostACKdoesnotreplay.",
+    "Inspected runnerauditblockingnetwork/devices/processlaunch/ctypes; fixturesretainunverifiedtaskoutcome rather thaninferringtasksuccess.",
+    "119authorchecksPASS, runtimechangeszero; both initial/finalretainedoutputpinsverified, no primary rerun."
+  ],
+  "limitations": [
+    "Original producer/selected source ownership and authority",
+    "Native SDK compilation/package/profile closure for WindowsBLE and MacClassic; Mac probe remains NOT workingBluetoothkeyboard",
+    "Real reviewed observation and input adapter contracts",
+    "Explicit owned-device pairing/identity/arming with measured stop/release/disconnect/uncertainexecution checks",
+    "User final release approval"
+  ],
+  "nativeActionAuthorized": false,
+  "runtimeIntegration": false
+}

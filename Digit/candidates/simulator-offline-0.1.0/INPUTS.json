@@ -1,0 +1,254 @@
+{
+  "atUtc": "2026-10-20T01:24:31.333471+00:00",
+  "owner": "/root/digit_owner",
+  "selectedIncrement": "Current recovered synthetic two-cycle journey and replacement/stop/lost-ack qualification; no invented defect",
+  "source": "/Users/ismailgunacar/Pontic/Digit/recovery/source/simulator-0.2.0/digit",
+  "candidateSource": "/Users/ismailgunacar/Pontic/Digit/candidates/simulator-offline-0.1.0/source",
+  "archiveSha256": "61aa55305e19adfa028f32425346c95027b03843299cef6023aee2b7d00ec045",
+  "recoveryReceiptSha256": "107dd689c4a830928c1b824aff37ad5d44d32bd4ed5ceb43b057029678f778b7",
+  "all42SourcePins": [
+    {
+      "path": ".gitignore",
+      "bytes": 65,
+      "sha256": "25dd9ed3d850e8e889c7a43c1051c47d62d41e1b8c03163cef7593bff791e800"
+    },
+    {
+      "path": "CHANGELOG.md",
+      "bytes": 1638,
+      "sha256": "f98edf2a7a63fbbc1e002c84c286cfd07749e908c1d9fb1523e848e5a028a59c"
+    },
+    {
+      "path": "LICENSE",
+      "bytes": 1075,
+      "sha256": "4e9b377f2e86414e33bc7e1c4fe6106fcacd721bd8644de07683fd434a4e67b0"
+    },
+    {
+      "path": "README.md",
+      "bytes": 6197,
+      "sha256": "7684a1b2a0c41f94c0a7bb45dd7852dcde900f57d8221646bbc2e8d5e16c51cb"
+    },
+    {
+      "path": "SECURITY.md",
+      "bytes": 4018,
+      "sha256": "09b30ecd21bde58f658dfb538c7c47ec5dd0599fcc36990e0a890becbee506d1"
+    },
+    {
+      "path": "THIRD_PARTY_NOTICES.md",
+      "bytes": 1437,
+      "sha256": "446ac92e9ab0ec4432417c441ca7e60cafcdca8ce7ec48c3abfb82f805e076d9"
+    },
+    {
+      "path": "digit/__init__.py",
+      "bytes": 97,
+      "sha256": "0c46b46c31cbae7b3bcfc9ef596dedd521bbaf41a2d4aad9bb2dcb60a9bc6144"
+    },
+    {
+      "path": "digit/__main__.py",
+      "bytes": 47,
+      "sha256": "79ee6f134c5c5193377cf9b189cbdcc3e2095e49ba9cec310114441c15a917c4"
+    },
+    {
+      "path": "digit/actions.py",
+      "bytes": 3845,
+      "sha256": "51a3d37f4e98b0725e9843a2ea9f23d2901121974a5921a88ab4ef0705cd7260"
+    },
+    {
+      "path": "digit/cli.py",
+      "bytes": 3304,
+      "sha256": "91eae7caa934be5629a3ea9cd220f0dc4610f6ee6885e78646c8e3c921187890"
+    },
+    {
+      "path": "digit/controller.py",
+      "bytes": 8401,
+      "sha256": "e3adbeadc7239048c2d7169c207aa7fcc95693cdd0ab34e798e5f21a6e55a46f"
+    },
+    {
+      "path": "digit/loop.py",
+      "bytes": 17139,
+      "sha256": "b8605d6bca719b3dd64e32103e36b99ee4e63ec9fc8773f013fa5c49a319e873"
+    },
+    {
+      "path": "digit/loop_demo.py",
+      "bytes": 2022,
+      "sha256": "c4977a63a31100568b76c61c0b765b78734f8cd9d3f187f2eb5f744d3441880f"
+    },
+    {
+      "path": "digit/loop_fakes.py",
+      "bytes": 4093,
+      "sha256": "c40a11bc51dbc6f89a53c133ace524bf407079be7013f210ac5c74f242105f92"
+    },
+    {
+      "path": "digit/protocol.py",
+      "bytes": 4567,
+      "sha256": "20ad9fc9c3f1d702965f46dbdf72c938c7acbaf8e765339a602a44481743690c"
+    },
+    {
+      "path": "digit/simulator.py",
+      "bytes": 7886,
+      "sha256": "67db08ba0619423676c7aaf78b8f12ca4ccff47f4e06db959960e646bbe603e8"
+    },
+    {
+      "path": "digit/transport.py",
+      "bytes": 469,
+      "sha256": "389aff45de655d3538f9d143eb5565f1626ac9f4e9b42974024f916964051c4d"
+    },
+    {
+      "path": "digit_observation/__init__.py",
+      "bytes": 771,
+      "sha256": "cea848f59e82f182ffd47bf78242b8b2c1f559346eac4fc5e00eae5083a63fdc"
+    },
+    {
+      "path": "digit_observation/contract.py",
+      "bytes": 5426,
+      "sha256": "51ecfffb14b3c066e68eba99cb99f54b5612cd65325e1f44622bd14bc87ce526"
+    },
+    {
+      "path": "digit_observation/geometry.py",
+      "bytes": 5539,
+      "sha256": "83ae3d8037eabdc58819ab7c9c60764b67abd70d801ce22503ea98514604b252"
+    },
+    {
+      "path": "digit_observation/guard.py",
+      "bytes": 14377,
+      "sha256": "baf4c4a0d4d31c17d76902a48f7bf7c61f6d0e8ea209db6253a13a979e831a35"
+    },
+    {
+      "path": "docs/architecture.md",
+      "bytes": 6991,
+      "sha256": "562f7b6160c6412e4a3fe6d7425d1b71ab6d739076056b4f1ac5a87e522c0e46"
+    },
+    {
+      "path": "docs/hardware-tests.md",
+      "bytes": 2946,
+      "sha256": "82b49b6d2a99b1e8b6d1d560de32dd363cedd67ea8d3aa3be9ae855d5abe7030"
+    },
+    {
+      "path": "docs/observation/LICENSE",
+      "bytes": 1075,
+      "sha256": "4e9b377f2e86414e33bc7e1c4fe6106fcacd721bd8644de07683fd434a4e67b0"
+    },
+    {
+      "path": "docs/observation/README.md",
+      "bytes": 5477,
+      "sha256": "7c741b24d5509f974d0d871b35f18ae737f4c7bf9ec71aed27ee263861efb882"
+    },
+    {
+      "path": "docs/observation/docs/integration.md",
+      "bytes": 5585,
+      "sha256": "4575cf338eb1550c6dd5015c3fd59a2915513572a8c274d52aa25657a5060553"
+    },
+    {
+      "path": "docs/observation/docs/test-status.md",
+      "bytes": 2038,
+      "sha256": "71fb4545b3d154f1443671ecee6093e5680a1751a876620fe81833aa8fd2ba64"
+    },
+    {
+      "path": "docs/observed-loop.md",
+      "bytes": 7057,
+      "sha256": "64c4eb788adc572fca41ed4e27ebd6efce08924df1bf571c204ffac6ed31b091"
+    },
+    {
+      "path": "docs/protocol.md",
+      "bytes": 4214,
+      "sha256": "7f79f5d5e8f56119510f5363ebd6e6d6a2b648041ed4a2c620803e5d661e2c3a"
+    },
+    {
+      "path": "docs/test-status.md",
+      "bytes": 2547,
+      "sha256": "0833b5ee96c4819f82ffa41b62aad18e124382c2e68ecfeaa12157c0e6250317"
+    },
+    {
+      "path": "examples/__init__.py",
+      "bytes": 31,
+      "sha256": "8c197099ee577a9134b522496e133e072446a33b194dcc63704e4db9edbf3f2b"
+    },
+    {
+      "path": "examples/hello.json",
+      "bytes": 99,
+      "sha256": "8e4517b5ccba3dffb35cd409c487df8b42531dd2e00e5e15bb4588a63087f5fb"
+    },
+    {
+      "path": "examples/shortcut.json",
+      "bytes": 115,
+      "sha256": "7618064119c087fa197fdcf633d98ee5e85d6c9acc35e8f8814945e2fe394348"
+    },
+    {
+      "path": "examples/synthetic_mapping.py",
+      "bytes": 1402,
+      "sha256": "a6b8bdec3e58527773309a911fbd2924e14be37a3bf404e2acaf6a79b505cd83"
+    },
+    {
+      "path": "pyproject.toml",
+      "bytes": 408,
+      "sha256": "2429979d7af871e2c18dc9c8c58042ba3d821247ba94c2c85febf4e04e6173b7"
+    },
+    {
+      "path": "tests/test_actions.py",
+      "bytes": 2319,
+      "sha256": "85e7adec159d4453470c9fe57e7e592e2b4fd666b9e175f5e28943ea95d14809"
+    },
+    {
+      "path": "tests/test_cli.py",
+      "bytes": 2108,
+      "sha256": "efd5e3a9a0296ebdc7d038220c599784d93cd5e060e5ff2b27d95857a16c29d1"
+    },
+    {
+      "path": "tests/test_controller.py",
+      "bytes": 7110,
+      "sha256": "93935ee4f891f675a5af21f5b11aa8ac26218136ed7251af9edaaec5a0d46c0e"
+    },
+    {
+      "path": "tests/test_fail_closed.py",
+      "bytes": 5686,
+      "sha256": "79655af9fe79bef6a7be185e131a412bb30b3bbc1d3c9c31ae75fed231d893f4"
+    },
+    {
+      "path": "tests/test_loop.py",
+      "bytes": 13839,
+      "sha256": "0e9d4a14c754e4b9262969d1e8f93df6dbdf5800a492a56db40108079a52d5ee"
+    },
+    {
+      "path": "tests/test_observation.py",
+      "bytes": 19038,
+      "sha256": "06be0e59c6ae91c984a7735c5b0801c59c11c339b5e015797fb5255ef56925b4"
+    },
+    {
+      "path": "tests/test_protocol.py",
+      "bytes": 2465,
+      "sha256": "5ff004ab1ad5257bc5964176ca950824b8267f1d01213b7a354a2c93c1f56b58"
+    }
+  ],
+  "sideEffectInspection": {
+    "entryFiles": [
+      "digit/loop.py",
+      "digit/loop_fakes.py",
+      "digit/loop_demo.py",
+      "digit/controller.py",
+      "digit/simulator.py",
+      "digit/cli.py",
+      "tests/test_loop.py",
+      "tests/test_cli.py"
+    ],
+    "networkOrHardwareImportsFound": false,
+    "runtimeDependencies": "Python standard library only",
+    "testTempRoot": "/Users/ismailgunacar/Pontic/Digit/candidates/simulator-offline-0.1.0/tmp",
+    "testInput": "in-memory simulator, fake model, manual clock, explicit simulated operator methods only",
+    "cliScope": "bounded fixture plan read/temp write and finite SystemClock waits; no OS input",
+    "noRecoveredCodeRunBeforeThisIncrement": true
+  },
+  "capacity": {
+    "freeBytes": 27096150016,
+    "batchCapBytes": 67108864,
+    "knownOtherReservationsConservativeBytes": 5403312128,
+    "floorBytes": 8740929536,
+    "afterCapAndKnownBytes": 21625729024,
+    "guardPassed": true
+  },
+  "constraints": [
+    "No actualBluetooth/devicepairing/permissions/OSinput/appautomation",
+    "No nativecompilation/service/model/provider/network/install/credentials/account/publication",
+    "No Documents/Hermes",
+    "Primary portfolio review before integration",
+    "Recovered originals byte-preserved"
+  ]
+}

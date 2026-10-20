@@ -1,0 +1,49 @@
+{
+  "schema": "modkvm-retained-component-current-location/0.1.0",
+  "verified_at_utc": "2026-10-20T03:29:46.888463+00:00",
+  "authority": "User statement Sentinel_5e78f050e9948191a78df8264e8ed050: I moved digit's folder into mk",
+  "product_lineage": [
+    "Digit",
+    "PortaBody",
+    "modkvm"
+  ],
+  "product_source_root": "/Users/ismailgunacar/Pontic/mk",
+  "retained_component_root": "/Users/ismailgunacar/Pontic/mk/Digit",
+  "root_is_physical_directory": true,
+  "retained_spelling": "Digit",
+  "lowercase_spelling_same_filesystem_entry": true,
+  "prefix_mapping": {
+    "historical_prefix": "/Users/ismailgunacar/Pontic/Digit",
+    "current_prefix": "/Users/ismailgunacar/Pontic/mk/Digit",
+    "historical_prefix_exists": false,
+    "rule": "Replace this exact prefix only when locating historical retained evidence; do not modify pinned original files."
+  },
+  "current_locations": {
+    "recovery": "/Users/ismailgunacar/Pontic/mk/Digit/recovery",
+    "simulator_recovered_source": "/Users/ismailgunacar/Pontic/mk/Digit/recovery/source/simulator-0.2.0/digit",
+    "windows_ble_recovered_source": "/Users/ismailgunacar/Pontic/mk/Digit/recovery/source/windows-ble-0.1.0/digit-windows-ble",
+    "mac_not_working_probe_source": "/Users/ismailgunacar/Pontic/mk/Digit/recovery/source/mac-classic-NOT-working-probe/digit-classic-macos",
+    "simulator_offline_candidate": "/Users/ismailgunacar/Pontic/mk/Digit/candidates/simulator-offline-0.1.0"
+  },
+  "verified_retained_identity": {
+    "archives_matching": 3,
+    "recovered_source_members_matching": 81,
+    "candidate_source_pins_matching": 42,
+    "qualification_evidence_pins_matching": 10,
+    "simulator_handoff_sha256": "092e60553a1e881449492a6349254d44277b77268d3538d4f89c5bd230bb7108",
+    "primary_review_sha256": "d28c1786d62d1448e4207dfe6bf43bbfafdb8de587fe4d4523173f5394a0eb10"
+  },
+  "selection": {
+    "active_source_build": "0d144cf3151e",
+    "frozen_staged_source_build": "4fafef729eb1",
+    "runtime_selected": false,
+    "move_implies_integration_or_activation": false
+  },
+  "indexes": {
+    "product_history": "/Users/ismailgunacar/Pontic/mk/HISTORY-INDEX.md",
+    "product_history_sha256": "d671c695ceebe9027e12c7747602273bacf580452cdce3791b55d1dc555fa920",
+    "component_index": "/Users/ismailgunacar/Pontic/mk/Digit/README.md",
+    "component_index_sha256": "21fd115a511bd5c15676083dd473cb8c8ae997ba8a03fd30ef6cd20fb5b7becb"
+  },
+  "provenance": "Original producer/copyright authority remains unverified; actual retained license/attribution and historical source/receipt hashes are unchanged."
+}

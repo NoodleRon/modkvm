@@ -1,0 +1,136 @@
+{
+  "schema": "pontic-digit-offline-qualification/0.1.0",
+  "atUtc": "2026-10-20T01:26:42.663830+00:00",
+  "owner": "/root/digit_owner",
+  "candidate": "/Users/ismailgunacar/Pontic/Digit/candidates/simulator-offline-0.1.0",
+  "runtimeVersion": "recovered0.2.0 unchanged",
+  "increment": "Current recovered synthetic two-cycle journey and replacement/stop/lost-ack qualification; no invented defect",
+  "productionSourceChangedFiles": [],
+  "qualificationOnlyPatch": "QUALIFICATION.patch",
+  "newFiles": [
+    "qualification/test_offline_acceptance.py",
+    "qualification/run_qualification.py",
+    "TREATMENT.md",
+    "README.md"
+  ],
+  "sourceIdentity": {
+    "all42CandidateSourcePinsEqualRecovered": true,
+    "all81RecoveredExtractedOriginalPinsStillMatch": true,
+    "all3RecoveredArchivesStillMatch": true,
+    "nativeSourcesTouched": false
+  },
+  "testEvidence": {
+    "atUtc": "2026-10-20T01:25:57.613776+00:00",
+    "baselineTests": 115,
+    "newJourneyTests": 4,
+    "testsRun": 119,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 0,
+    "successful": true,
+    "elapsedSeconds": 0.36786012499942444,
+    "forbiddenOperationAttempts": [],
+    "networkHardwareProviderProcessLaunchGuarded": true,
+    "observedCodeMode": "synthetic fake model/source/transport and explicit fixture operator only",
+    "hostedOrActualDeviceClaim": false
+  },
+  "sourceReview": {
+    "ownerReview": "No blocking source finding in four synthetic journeys/runner; no runtime behavior patch",
+    "primaryPortfolioReview": "PENDING; no integration authorized by this receipt"
+  },
+  "resource": {
+    "batchCapBytes": 67108864,
+    "candidateLogicalBytesBeforeHandoff": 241232,
+    "candidateAllocatedBytesBeforeHandoff": 372736,
+    "capacityGate": {
+      "freeBytes": 27096150016,
+      "batchCapBytes": 67108864,
+      "knownOtherReservationsConservativeBytes": 5403312128,
+      "floorBytes": 8740929536,
+      "afterCapAndKnownBytes": 21625729024,
+      "guardPassed": true
+    },
+    "freeBytesAtSeal": 27088965632,
+    "newCompilerReservation": false
+  },
+  "verificationLevels": {
+    "sourceTested": "PASS119current synthetic checks",
+    "hosted": false,
+    "browserOrDevice": false,
+    "actualBluetoothOrOSInput": false,
+    "actualObservationOrProvider": false,
+    "taskSuccessEvaluator": false,
+    "integratedOrAdopted": false
+  },
+  "remainingGates": [
+    "Primary portfolio exact-artifact review",
+    "Original producer/selected source ownership and authority",
+    "Native SDK compilation/package/profile closure for WindowsBLE and MacClassic; Mac probe remains NOT workingBluetoothkeyboard",
+    "Real reviewed observation and input adapter contracts",
+    "Explicit owned-device pairing/identity/arming with measured stop/release/disconnect/uncertainexecution checks",
+    "User final release approval"
+  ],
+  "pins": [
+    {
+      "path": "qualification/test_offline_acceptance.py",
+      "bytes": 4203,
+      "sha256": "89661059e768800142e42b5d678caed90b9c5185c0fed9509260e20ab75dfbc9"
+    },
+    {
+      "path": "qualification/run_qualification.py",
+      "bytes": 2086,
+      "sha256": "3d28973eb1d2a2d01c88509b0262c4eb4649bc301172e91be00d8100e1cbd71a"
+    },
+    {
+      "path": "TREATMENT.md",
+      "bytes": 1158,
+      "sha256": "eef57f0dab575bf32ec107a9094d848d83199cb42450f6e6fd0f00ec1dc34d63"
+    },
+    {
+      "path": "README.md",
+      "bytes": 1433,
+      "sha256": "7ac1d2aa3a0453c03535482577726ef65dad8b88b263317171d4f423066a2844"
+    },
+    {
+      "path": "INPUTS.json",
+      "bytes": 8399,
+      "sha256": "957f849cf08aaef6936dd6d2398b794b06442952f0a7ceb52daf5af2133ff626"
+    },
+    {
+      "path": "TEST-RESULT.json",
+      "bytes": 455,
+      "sha256": "62b75babb65a8764b5365bc65cd6aa957ce395de1424fa45b1f32a2b87c0a17d"
+    },
+    {
+      "path": "TEST-OUTPUT.txt",
+      "bytes": 14396,
+      "sha256": "06832f279bd96edcca8d50f9ffed2a014bd9ac0d9a518812e81e012c8374baac"
+    },
+    {
+      "path": "TEST-RESULT.initial.json",
+      "bytes": 454,
+      "sha256": "63b8387de8a3cd8c64385b0f6f1f6faef4aff01893d2fe3bc276bf5de0ab5adc"
+    },
+    {
+      "path": "TEST-OUTPUT.initial.txt",
+      "bytes": 14396,
+      "sha256": "11f0ea3d738babf430a629610dd2fee2120a23ad9da72ba58e287fc920c38f31"
+    },
+    {
+      "path": "QUALIFICATION.patch",
+      "bytes": 9289,
+      "sha256": "77ca94869b93d8765bb235e93922c1da7d47576057a0b30f53ec48bd0f5e00fe"
+    }
+  ],
+  "externalActions": {
+    "network": false,
+    "devices": false,
+    "nativeCompilation": false,
+    "newPackageInstall": false,
+    "providerOrModel": false,
+    "accountsCredentialsGrantsSecurity": false,
+    "DocumentsOrHermes": false,
+    "spendingUsd": 0,
+    "publication": false
+  }
+}
