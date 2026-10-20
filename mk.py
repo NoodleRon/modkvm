@@ -1975,8 +1975,13 @@ def main_kb():
     print("mk: debug: system bus connected", flush=True)
     name = server_name_for(load_state().get("name"), socket.gethostname())
 
-    r = subprocess.run(["btmgmt", "class", "5", str(DEV_SUBCLASS)], capture_output=True, text=True)
-    logging.info(f"btmgmt class: {(r.stdout or r.stderr).strip()[:120]}")
+    try:
+        r = subprocess.run(["btmgmt", "class", "5", str(DEV_SUBCLASS)], capture_output=True, text=True, timeout=5)
+        logging.info(f"btmgmt class: {(r.stdout or r.stderr).strip()[:120]}")
+    except subprocess.TimeoutExpired:
+        logging.warning("btmgmt class timed out (continuing; the adapter class may be stale)")
+    except OSError as e:
+        logging.warning(f"btmgmt class failed: {e}")
 
     have_bonds = bool(bonds(bus))
     for k, v in (("Powered", dbus.Boolean(True)), ("Alias", dbus.String(name)),
